@@ -1,0 +1,2033 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<script>
+/* ===== حالت محلی (بدون Google Apps Script) ===== */
+(function(){
+  var DB_KEY='etehad_local_db_v1';
+  function db(){ try{ return JSON.parse(localStorage.getItem(DB_KEY))||{}; }catch(e){ return {}; } }
+  function save(d){ try{ localStorage.setItem(DB_KEY, JSON.stringify(d)); }catch(e){} }
+  function resp(o){ return new Response(JSON.stringify(o),{status:200,headers:{'Content-Type':'application/json'}}); }
+  var origFetch=window.fetch;
+  window.fetch=function(input,init){
+    var url=typeof input==='string'?input:((input&&input.url)||'');
+    var isLocal=(url.indexOf('script.google.com')!==-1)||(url.indexOf('local-api')!==-1);
+    if(!isLocal) return origFetch.apply(this,arguments);
+    var action='', payload={};
+    try{ if(init&&init.body){ var b=JSON.parse(init.body); action=b.action||''; payload=b.payload||{}; } }catch(e){}
+    if(!action){
+      var q=(url.split('?')[1]||'');
+      var m=/action=([^&]+)/.exec(q); action=m?decodeURIComponent(m[1]):'';
+      q.split('&').forEach(function(kv){ var p=kv.split('='); if(p[0]&&p[0]!=='action'){ try{ payload[decodeURIComponent(p[0])]=decodeURIComponent(p[1]||''); }catch(e){} } });
+    }
+    var d=db();
+    switch(action){
+      case 'ping': return Promise.resolve(resp({ok:true}));
+      case 'getAll': return Promise.resolve(resp({ok:true,invoices:d.invoices||[],daily:d.daily||[],monthly:d.monthly||[],sellers:d.sellers||[]}));
+      case 'registerSeller': {
+        var phone=String(payload.phone||'').trim();
+        d.sellers=d.sellers||[];
+        var s=null; for(var i=0;i<d.sellers.length;i++){ if(String(d.sellers[i].phone)===phone){ s=d.sellers[i]; break; } }
+        if(!s){ s={name:payload.name||'',phone:phone,code:String(Math.floor(100000+Math.random()*900000)),active:(payload.active===undefined?true:!!payload.active)}; d.sellers.push(s); }
+        else { if(payload.name) s.name=payload.name; if(payload.active!==undefined) s.active=!!payload.active; }
+        save(d); return Promise.resolve(resp({ok:true,code:s.code}));
+      }
+      case 'deleteSeller': { d.sellers=(d.sellers||[]).filter(function(x){ return String(x.phone)!==String(payload.phone); }); save(d); return Promise.resolve(resp({ok:true})); }
+      case 'updateInvoice': { d.invoices=d.invoices||[]; var f=false; for(var i=0;i<d.invoices.length;i++){ if(String(d.invoices[i].id)===String(payload.id)){ d.invoices[i]=payload.invoice; f=true; break; } } if(!f) d.invoices.push(payload.invoice); save(d); return Promise.resolve(resp({ok:true})); }
+      case 'deleteInvoice': { d.invoices=(d.invoices||[]).filter(function(x){ return String(x.id)!==String(payload.id); }); save(d); return Promise.resolve(resp({ok:true})); }
+      case 'updateDaily': { d.daily=d.daily||[]; var f=false; for(var i=0;i<d.daily.length;i++){ if(String(d.daily[i].id)===String(payload.id)){ d.daily[i]=payload.report; f=true; break; } } if(!f) d.daily.push(payload.report); save(d); return Promise.resolve(resp({ok:true})); }
+      case 'deleteDaily': { d.daily=(d.daily||[]).filter(function(x){ return String(x.id)!==String(payload.id); }); save(d); return Promise.resolve(resp({ok:true})); }
+      case 'login': {
+        var phone=String(payload.phone||''), code=String(payload.code||''); var s=null, arr=d.sellers||[];
+        for(var i=0;i<arr.length;i++){ if(String(arr[i].phone)===phone && String(arr[i].code)===code && arr[i].active!==false){ s=arr[i]; break; } }
+        if(s) return Promise.resolve(resp({ok:true,phone:s.phone,name:s.name}));
+        return Promise.resolve(resp({ok:false,error:'شماره تلفن یا کد ورود نادرست است.'}));
+      }
+      case 'upsertMany': { var kind=payload.kind; if(kind){ d[kind]=payload.list||[]; save(d); } return Promise.resolve(resp({ok:true})); }
+      default: return Promise.resolve(resp({ok:false,error:'عملیات پشتیبانی نمی‌شود: '+action}));
+    }
+  };
+})();
+</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>سامانه صدور و مدیریت فاکتور فروش | گروه بازرگانی اتحاد</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+/* فونت اصلی: وزیرمتن (فونت وب قابل‌اعتماد فارسی) — فونت‌های سیستمی به‌عنوان جایگزین */
+:root{
+  --ink:#1c1a15;
+  --paper:#fffdf7;
+  --line:#2b2b2b;
+  --gold:#8a6d1f;
+  --gold-deep:#5f4a12;
+  --cream:#f6f1e3;
+  --panel:#fbf8ef;
+  --accent:#7a1f1f;
+  --muted:#6b6455;
+  --shadow:0 10px 30px rgba(40,32,10,.12);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:linear-gradient(180deg,#efe7d2 0%, #e6dcc2 100%);
+  font-family:'Vazirmatn','B Nazanin','Tahoma',sans-serif;
+  color:var(--ink);
+  min-height:100vh;
+}
+::selection{background:#d8c98a;}
+button{font-family:inherit;cursor:pointer;}
+input,select,textarea{font-family:inherit;}
+
+/* ---------- App chrome (non-print) ---------- */
+.app-shell{max-width:1400px;margin:0 auto;padding:18px 18px 60px;}
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;
+  background:linear-gradient(135deg,#2b2417,#3c3218);
+  color:#f3ead0;border-radius:16px;padding:16px 22px;box-shadow:var(--shadow);
+  margin-bottom:18px;flex-wrap:wrap;
+}
+.brand{display:flex;align-items:center;gap:14px;}
+
+/* >>> لوگوی گروه اتحاد (جایگزین حرف «ات») <<< */
+.brand-logo{
+  width:60px;height:60px;object-fit:contain;border-radius:12px;
+  background:#0d0d0d;padding:3px;
+  box-shadow:inset 0 0 0 2px #fff3d0, 0 3px 10px rgba(0,0,0,.45);
+  flex-shrink:0;
+}
+.brand-text h1{margin:0;font-size:20px;font-weight:900;}
+/* متن زیر عنوان حذف شد */
+
+.tabs{display:flex;gap:8px;}
+.tab-btn{
+  border:1px solid #7c6a3a;background:transparent;color:#e9dfbd;padding:10px 20px;border-radius:10px;
+  font-size:15px;font-weight:900;transition:.15s;
+}
+.tab-btn.active{background:#e9dfbd;color:#2b2417;border-color:#e9dfbd;}
+.tab-btn:hover{filter:brightness(1.1);}
+
+.panel{
+  background:var(--panel);border-radius:16px;box-shadow:var(--shadow);
+  padding:22px;margin-bottom:18px;border:1px solid #e3d8b5;
+}
+.panel h2{margin-top:0;font-size:19px;color:var(--gold-deep);border-bottom:2px solid #e3d8b5;padding-bottom:10px;font-weight:900;}
+.section-title{
+  background:linear-gradient(90deg,#3c3218,#5c4c22);
+  color:#f3ead0;padding:9px 14px;border-radius:8px;font-size:16px;font-weight:900;margin:18px 0 12px;
+}
+.party-box{border:1.5px solid #e3d8b5;border-radius:12px;padding:14px 16px 16px;margin-bottom:14px;background:#fffdf7;}
+.party-box:last-of-type{margin-bottom:0;}
+.party-box .section-title{margin-top:0;}
+.grid{display:grid;gap:12px;}
+.grid.cols-4{grid-template-columns:repeat(4,1fr);}
+.grid.cols-3{grid-template-columns:repeat(3,1fr);}
+.grid.cols-2{grid-template-columns:repeat(2,1fr);}
+@media (max-width:900px){.grid.cols-4,.grid.cols-3,.grid.cols-2{grid-template-columns:1fr;}}
+
+/* ======================= LABEL & INPUT STYLES (BOLD + LARGE) ======================= */
+.field label{
+  display:block;
+  font-size:16px;              /* لیبل درشت */
+  font-weight:900;             /* لیبل بولد */
+  color:var(--gold-deep);      /* پررنگ */
+  margin-bottom:5px;
+}
+.field input,
+.field select,
+.field textarea{
+  width:100%;
+  padding:11px 12px;
+  border-radius:9px;
+  border:1.5px solid #c9a227;  /* حاشیه پررنگ‌تر */
+  background:#fff;
+  font-size:16px;              /* فونت داخل فیلد درشت */
+  font-weight:800;             /* فونت داخل فیلد بولد */
+  color:var(--ink);
+  line-height:1.6;
+}
+.field input::placeholder,
+.field textarea::placeholder{
+  font-weight:600;
+  color:#a89a76;
+}
+.field input:focus,
+.field select:focus,
+.field textarea:focus{
+  outline:2px solid #b89b45;border-color:#b89b45;background:#fffdf3;
+}
+.field.issuer input{background:#fff7e2;border-color:#c9a227;}
+.hint{font-size:12.5px;color:var(--muted);margin-top:4px;font-weight:700;}
+
+.btn{
+  border:none;border-radius:9px;padding:11px 20px;font-size:15px;font-weight:900;
+  display:inline-flex;align-items:center;gap:7px;transition:.15s;
+}
+.btn-primary{background:linear-gradient(135deg,#8a6d1f,#5f4a12);color:#fff;}
+.btn-primary:hover{filter:brightness(1.08);}
+.btn-secondary{background:#e9e1c8;color:#3c3218;}
+.btn-secondary:hover{background:#ddd3ae;}
+.btn-danger{background:#7a1f1f;color:#fff;}
+.btn-danger:hover{filter:brightness(1.1);}
+.btn-ghost{background:transparent;border:1px solid #cdbf94;color:#3c3218;}
+.btn-sm{padding:7px 13px;font-size:13px;border-radius:7px;font-weight:800;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0;}
+
+/* Items editor table */
+.items-editor{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px;}
+.items-editor th{background:#3c3218;color:#f3ead0;padding:9px 6px;font-size:13.5px;font-weight:900;}
+.items-editor td{padding:6px 4px;border-bottom:1px solid #e3d8b5;}
+.items-editor input{
+  width:100%;padding:7px 7px;
+  border:1.5px solid #cdbf94;border-radius:6px;
+  font-size:15px;          /* فونت داخل ردیف اقلام درشت */
+  font-weight:800;
+  text-align:center;
+  color:var(--ink);
+}
+.items-editor input.desc-input{text-align:right;}
+.items-editor .row-del{background:#7a1f1f;color:#fff;border:none;border-radius:6px;width:28px;height:28px;font-size:16px;font-weight:900;}
+
+/* Notes */
+.notes-box textarea{min-height:120px;resize:vertical;}
+.notes-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
+
+/* Management table */
+.search-bar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.search-bar input{
+  flex:1;min-width:220px;
+  padding:12px 14px;border-radius:10px;
+  border:1.5px solid #c9a227;
+  font-size:16px;font-weight:800;   /* جستجو درشت و بولد */
+}
+table.list-table{width:100%;border-collapse:collapse;font-size:14px;}
+table.list-table th{background:#3c3218;color:#f3ead0;padding:11px 8px;position:sticky;top:0;font-weight:900;font-size:14px;}
+table.list-table td{padding:10px 8px;border-bottom:1px solid #e6ddc0;text-align:center;font-weight:700;}
+table.list-table tr:hover{background:#f3ecd4;}
+.badge{padding:4px 11px;border-radius:20px;font-size:12px;font-weight:900;}
+.badge.cash{background:#e2f3e2;color:#256029;}
+.badge.noncash{background:#fdeee0;color:#a05a11;}
+.list-actions{display:flex;gap:6px;justify-content:center;}
+.empty-state{text-align:center;padding:50px 20px;color:var(--muted);font-weight:800;font-size:15px;}
+
+/* Toast */
+#toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:#2b2417;color:#f3ead0;padding:13px 24px;border-radius:10px;font-size:15px;font-weight:800;
+  opacity:0;transition:.25s;pointer-events:none;z-index:999;box-shadow:var(--shadow);
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+/* ---------- The Invoice Sheet (also used for print/pdf) ---------- */
+.sheet-wrap{
+  background:#d9cfa8;border-radius:14px;padding:22px;box-shadow:var(--shadow);
+  display:flex;justify-content:center;overflow:auto;
+}
+/* ---- اندازه فونت پایه‌ی کل فاکتور: همه‌جا یک اندازه و یک فونت ---- */
+#sheet{
+  width:277mm;min-height:190mm;background:var(--paper);
+  border:2px solid var(--line);padding:8mm 10mm;
+  font-size:13px;color:#111;line-height:1.5;
+  transform-origin:top center;
+}
+#sheet, #sheet *{font-family:'Vazirmatn','B Nazanin','Tahoma',sans-serif !important;font-size:13px;}
+#sheet .num{font-weight:900;}
+.sheet-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;}
+.sheet-top .meta-line{margin-bottom:3px;}
+.sheet-top .meta-line b{margin-left:6px;font-weight:900;}
+.sheet-header-title{
+  text-align:center;font-size:19px !important;font-weight:900;margin-bottom:4px;
+}
+table.sheet-table{width:100%;border-collapse:collapse;table-layout:fixed;}
+table.sheet-table td,table.sheet-table th{border:1px solid var(--line);padding:5px 6px;vertical-align:middle;}
+.stitle{
+  text-align:center;font-weight:900;background:#efe9d4;padding:5px;
+}
+.lbl{font-weight:900;white-space:nowrap;}
+.val-cell{font-weight:600;}
+/* جدول فروشنده/خریدار: بدون خط جدا کننده داخلی، متن وسط‌چین، پس‌زمینه کمی خاکستری */
+table.sheet-table.party-table{border:1.5px solid var(--line);background:#eeeeee;margin-bottom:5px;}
+table.sheet-table.party-table:last-of-type{margin-bottom:0;}
+table.sheet-table.party-table td{border:none;text-align:center;}
+table.sheet-table.party-table .stitle{background:#eeeeee;color:#9a9a9a;font-weight:900;}
+table.sheet-table.party-table .name-val{text-align:right;padding-right:8px;}
+.items-head th{background:#efe9d4;font-weight:900;text-align:center;padding:4px 3px;}
+.items-body td{text-align:center;font-weight:600;padding:4px 3px;}
+.items-body td.desc-cell{text-align:right;padding-right:6px;}
+.grand-row td{font-weight:900;background:#f7f3e4;}
+/* اعداد ستون‌های مبلغ: وسط‌چین، بدون شکستن خط و با اندازه‌ای که اعداد میلیاردی در خانه جا شوند */
+#sheet .items-body td.num,
+#sheet .grand-row td.num{
+  text-align:center !important;
+  white-space:nowrap;
+  font-size:11.5px;
+  padding-left:1px;padding-right:1px;
+  letter-spacing:0;
+  overflow:hidden;
+}.terms-row td{font-weight:700;padding:6px;}
+.sign-row td{height:20mm;vertical-align:top;font-weight:900;padding:6px;}
+.notes-print{
+  border:1px solid var(--line);border-top:none;padding:6px 8px;font-weight:600;min-height:16mm;white-space:pre-wrap;
+}
+.notes-print b{font-weight:900;}
+.watermark-hint{font-size:10px !important;color:#999;text-align:left;margin-top:2px;}
+
+/* ---------- Daily/Monthly report sheet (separate from invoice #sheet) ---------- */
+.rwrap{background:#dce7e4;border-radius:14px;padding:22px;box-shadow:var(--shadow);display:flex;justify-content:center;overflow:auto;}
+.rsheet{
+  width:210mm;min-height:100mm;background:#fffefb;border:2px solid #0f2438;padding:10mm 12mm;
+  font-family:'Vazirmatn','Tahoma',sans-serif;font-size:13px;color:#1b1f24;line-height:1.6;
+}
+.rsheet:empty{display:flex;align-items:center;justify-content:center;color:#9a9a9a;font-weight:800;}
+.rsheet:empty::before{content:'برای مشاهده پیش‌نمایش، اطلاعات را وارد یا گزارش ماهانه را بسازید.';}
+.rsheet .rtitle{text-align:center;font-size:18px;font-weight:900;color:#0f2438;margin-bottom:4px;}
+.rsheet .rsub{text-align:center;font-size:12px;color:#6b7280;margin-bottom:12px;}
+.rsheet table{width:100%;border-collapse:collapse;margin-top:8px;}
+.rsheet table th,.rsheet table td{border:1px solid #d8d2c2;padding:6px 8px;}
+.rsheet table th{background:#0f2438;color:#f2ede2;font-weight:800;text-align:center;}
+.rsheet td.rlabel{font-weight:700;color:#16314a;width:55%;}
+.rsheet td.rval{text-align:center;font-weight:900;color:#0a6b61;}
+.rsheet .rmeta{display:flex;justify-content:space-between;margin-bottom:10px;font-weight:700;flex-wrap:wrap;gap:6px;}
+.rsheet .rnote-title{font-weight:900;color:#16314a;margin-top:12px;margin-bottom:3px;font-size:12.5px;}
+.rsheet .rnote-body{border:1px solid #d8d2c2;border-radius:6px;padding:6px 8px;white-space:pre-wrap;font-size:12.5px;min-height:14px;}
+@media print{
+  body.printing-report *{visibility:hidden;}
+  body.printing-report .rwrap, body.printing-report .rwrap *{visibility:visible;}
+  body.printing-report .rwrap{position:absolute;inset:0;background:#fff;padding:0;box-shadow:none;border-radius:0;}
+  body.printing-report .rsheet{width:190mm;border:1px solid #000;margin:0 auto;}
+  body.printing-report{background:#fff;}
+}
+.hidden{display:none !important;}
+.no-print-badge{display:inline-block;background:#c9a227;color:#2b2417;font-size:10px;padding:1px 8px;border-radius:8px;margin-right:6px;}
+
+/* Print rules */
+@media print{
+  body *{visibility:hidden;}
+  .sheet-wrap, .sheet-wrap *{visibility:visible;}
+  .sheet-wrap{position:absolute;inset:0;background:#fff;padding:0;box-shadow:none;border-radius:0;}
+  #sheet{width:285mm;min-height:0;border:2px solid #000;box-shadow:none;margin:0 auto;}
+  @page{size:A4 landscape;margin:6mm;}
+  .no-print{display:none !important;}
+}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+<div class="app-shell">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-text">
+        <h1>سامانه صدور و مدیریت فاکتور فروش</h1>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn active" id="tabBtnNew" onclick="switchTab('new')">فاکتور جدید</button>
+      <button class="tab-btn" id="tabBtnManage" onclick="switchTab('manage')">مدیریت و جستجو</button>
+      <button class="tab-btn" id="tabBtnDaily" onclick="switchTab('daily')">گزارش روزانه</button>
+      <button class="tab-btn" id="tabBtnReports" onclick="switchTab('reports')">مدیریت گزارش‌ها</button>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: NEW / EDIT ===================== -->
+  <div id="tabNew">
+
+    <div class="panel no-print">
+      <h2>اطلاعات مدیریتی فاکتور</h2>
+      <div class="grid cols-4">
+        <div class="field issuer">
+          <label>نام صادر کننده فاکتور (فقط داخلی — در چاپ نمی‌آید)</label>
+          <input id="in_issuer" placeholder="مثال: محمد اتحاد">
+          <div class="hint">برای جستجو در بخش مدیریت استفاده می‌شود</div>
+        </div>
+        <div class="field">
+          <label>شماره سریال</label>
+          <input id="in_serial" placeholder="مثال: ۰۰۱۲۵">
+        </div>
+        <div class="field">
+          <label>تاریخ صدور</label>
+          <div style="display:flex;gap:4px;">
+            <select id="in_issueY"></select>
+            <select id="in_issueM"></select>
+            <select id="in_issueD"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>تاریخ اعتبار</label>
+          <div style="display:flex;gap:4px;">
+            <select id="in_validY"></select>
+            <select id="in_validM"></select>
+            <select id="in_validD"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <h2>مشخصات فروشنده و خریدار</h2>
+
+      <div class="party-box">
+        <div class="section-title">مشخصات فروشنده</div>
+        <div class="grid cols-4">
+          <div class="field"><label>نام شخص حقیقی / حقوقی</label><input id="s_name"></div>
+          <div class="field"><label>استان</label><input id="s_province"></div>
+          <div class="field"><label>شهرستان</label><input id="s_county"></div>
+          <div class="field"><label>شهر</label><input id="s_city"></div>
+        </div>
+        <div class="grid cols-3" style="margin-top:10px;">
+          <div class="field"><label>نشانی کامل</label><input id="s_address"></div>
+          <div class="field"><label>شماره / شناسه ملی</label><input id="s_nid"></div>
+          <div class="field"><label>تلفن</label><input id="s_phone"></div>
+        </div>
+      </div>
+
+      <div class="party-box">
+        <div class="section-title">مشخصات خریدار</div>
+        <div class="grid cols-4">
+          <div class="field"><label>نام شخص حقیقی / حقوقی</label><input id="b_name"></div>
+          <div class="field"><label>استان</label><input id="b_province"></div>
+          <div class="field"><label>شهرستان</label><input id="b_county"></div>
+          <div class="field"><label>شماره / شناسه ملی</label><input id="b_nid"></div>
+        </div>
+        <div class="grid cols-2" style="margin-top:10px;">
+          <div class="field"><label>نشانی کامل</label><input id="b_address"></div>
+          <div class="field"><label>تلفن</label><input id="b_phone"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <h2>اقلام فاکتور</h2>
+      <div class="toolbar">
+        <button class="btn btn-primary" onclick="addItemRow()">＋ افزودن ردیف</button>
+        <span class="hint" style="align-self:center;">با افزودن ردیف، فاکتور همچنان در یک برگه چاپ می‌شود (تنظیم خودکار اندازه)</span>
+      </div>
+      <datalist id="unitList">
+        <option value="کیلوگرم">
+        <option value="گرم">
+        <option value="تن">
+        <option value="عدد">
+        <option value="بسته">
+        <option value="کارتن">
+        <option value="متر">
+        <option value="متر مربع">
+        <option value="لیتر">
+        <option value="دستگاه">
+      </datalist>
+      <div style="overflow-x:auto;">
+      <table class="items-editor" id="itemsEditorTable">
+        <thead>
+          <tr>
+            <th style="width:34px;">ردیف</th>
+            <th style="width:70px;">کد کالا</th>
+            <th>شرح کالا یا خدمات</th>
+            <th style="width:70px;">تعداد</th>
+            <th style="width:90px;">واحد</th>
+            <th style="width:110px;">مبلغ واحد (ریال)</th>
+            <th style="width:110px;">مبلغ کل (ریال)</th>
+            <th style="width:100px;">تخفیف (ریال)</th>
+            <th style="width:100px;">مالیات و عوارض (ریال)</th>
+            <th style="width:34px;"></th>
+          </tr>
+        </thead>
+        <tbody id="itemsEditorBody"></tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <h2>شرایط فروش و توضیحات</h2>
+      <div class="grid cols-3">
+        <div class="field">
+          <label>نحوه فروش</label>
+          <select id="in_payType">
+            <option value="cash">نقدی</option>
+            <option value="noncash">غیر نقدی</option>
+          </select>
+        </div>
+      </div>
+      <div class="field notes-box" style="margin-top:12px;">
+        <label>توضیحات (مناسب برای ذخیره شماره حساب و موارد مشابه)</label>
+        <textarea id="in_notes" placeholder="مثال: شماره حساب واریز ..."></textarea>
+        <div class="notes-actions">
+          <button class="btn btn-secondary btn-sm" onclick="saveNotesAsDefault()">ذخیره به‌عنوان متن پیش‌فرض</button>
+          <button class="btn btn-ghost btn-sm" onclick="insertDefaultNotes()">درج متن پیش‌فرض</button>
+          <button class="btn btn-danger btn-sm" onclick="clearNotes()">حذف توضیحات</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <div class="toolbar">
+        <button class="btn btn-primary" onclick="saveInvoice()">💾 ذخیره فاکتور</button>
+        <button class="btn btn-secondary" onclick="newInvoice()">🆕 فاکتور خالی جدید</button>
+        <button class="btn btn-secondary" onclick="doPrint()">🖨️ چاپ</button>
+        <button class="btn btn-secondary" onclick="exportPDF()">📄 خروجی PDF</button>
+        <button class="btn btn-secondary" onclick="exportExcel()">📊 خروجی Excel</button>
+      </div>
+    </div>
+
+    <!-- ============ Printable / exportable sheet ============ -->
+    <div class="panel">
+      <h2 class="no-print">پیش‌نمایش فاکتور (دقیقاً همین در چاپ/PDF/اکسل خروجی می‌شود)</h2>
+      <div class="sheet-wrap">
+        <div id="sheet"><!-- filled by JS --></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: MANAGE ===================== -->
+  <div id="tabManage" class="hidden">
+    <div class="panel">
+      <h2>مدیریت و جستجوی فاکتورها</h2>
+      <div class="search-bar">
+        <input id="searchBox" placeholder="جستجو در نام خریدار، فروشنده، صادرکننده، شماره سریال، شرح کالا یا توضیحات ..." oninput="renderList()">
+        <button class="btn btn-secondary" onclick="exportAllJSON()">⬇️ پشتیبان JSON</button>
+        <label class="btn btn-secondary" style="margin:0;">
+          ⬆️ بازیابی JSON
+          <input type="file" id="importFile" accept=".json" style="display:none" onchange="importAllJSON(event)">
+        </label>
+      </div>
+      <div style="overflow-x:auto;">
+      <table class="list-table" id="listTable">
+        <thead>
+          <tr>
+            <th>شماره سریال</th>
+            <th>تاریخ صدور</th>
+            <th>خریدار</th>
+            <th>صادر کننده</th>
+            <th>مبلغ کل (ریال)</th>
+            <th>نحوه فروش</th>
+            <th>عملیات</th>
+          </tr>
+        </thead>
+        <tbody id="listBody"></tbody>
+      </table>
+      </div>
+      <div id="emptyState" class="empty-state hidden">هیچ فاکتوری ثبت نشده است.</div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: DAILY REPORT ===================== -->
+  <div id="tabDaily" class="hidden">
+
+    <div class="panel no-print">
+      <h2>مشخصات گزارش روزانه</h2>
+      <div class="grid cols-3">
+        <div class="field">
+          <label>نام و نام‌خانوادگی کارشناس</label>
+          <input id="dr_fullName" placeholder="مثلاً: زهرا احمدی">
+        </div>
+        <div class="field">
+          <label>تاریخ گزارش (شمسی)</label>
+          <div style="display:flex;gap:4px;">
+            <select id="dr_dateY"></select>
+            <select id="dr_dateM"></select>
+            <select id="dr_dateD"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <h2>شاخص‌های عملکرد روزانه</h2>
+      <div style="overflow-x:auto;">
+      <table class="list-table" id="drMetricsTable" style="text-align:right;">
+        <thead>
+          <tr><th style="text-align:right;">شاخص</th><th style="width:110px;">واحد</th><th style="width:150px;">مقدار</th></tr>
+        </thead>
+        <tbody id="drMetricsBody"></tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="panel no-print">
+      <h2>بخش توضیحی</h2>
+      <div class="field" style="margin-bottom:12px;"><label>خلاصه عملکرد و مهم‌ترین رویدادهای امروز</label><textarea id="dr_n1" rows="3"></textarea></div>
+      <div class="field" style="margin-bottom:12px;"><label>چالش‌ها و موانع پیش‌آمده در طول روز</label><textarea id="dr_n2" rows="3"></textarea></div>
+      <div class="field" style="margin-bottom:12px;"><label>بازخورد و نظرات مشتریان</label><textarea id="dr_n3" rows="3"></textarea></div>
+      <div class="field" style="margin-bottom:12px;"><label>پیشنهادات و راهکارهای بهبود</label><textarea id="dr_n4" rows="3"></textarea></div>
+      <div class="field"><label>برنامه و اقدامات پیش‌بینی‌شده برای روز کاری بعد</label><textarea id="dr_n5" rows="3"></textarea></div>
+    </div>
+
+    <div class="panel no-print">
+      <div class="toolbar">
+        <button class="btn btn-primary" onclick="saveDailyReport()">💾 ذخیره گزارش روزانه</button>
+        <button class="btn btn-secondary" onclick="newDailyReport()">🆕 فرم خالی جدید</button>
+        <button class="btn btn-secondary" onclick="printDailyReport()">🖨️ چاپ</button>
+        <button class="btn btn-secondary" onclick="exportDailyPDF()">📄 خروجی PDF</button>
+        <button class="btn btn-secondary" onclick="exportDailyExcel()">📊 خروجی Excel</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2 class="no-print">پیش‌نمایش گزارش روزانه</h2>
+      <div class="rwrap">
+        <div id="drSheet" class="rsheet"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: REPORTS MANAGEMENT ===================== -->
+  <div id="tabReports" class="hidden">
+
+    <div class="panel">
+      <h2>ساخت گزارش ماهانه</h2>
+      <div class="grid cols-3">
+        <div class="field">
+          <label>سال شمسی</label>
+          <select id="mr_year"></select>
+        </div>
+        <div class="field">
+          <label>ماه شمسی</label>
+          <select id="mr_month"></select>
+        </div>
+        <div class="field" style="display:flex;align-items:end;">
+          <button class="btn btn-primary" onclick="buildMonthlyReport()" style="width:100%;">📈 ساخت گزارش ماهانه</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-secondary" onclick="saveMonthlyReport()">💾 ذخیره گزارش ماهانه</button>
+        <button class="btn btn-secondary" onclick="printMonthlyReport()">🖨️ چاپ</button>
+        <button class="btn btn-secondary" onclick="exportMonthlyPDF()">📄 خروجی PDF</button>
+        <button class="btn btn-secondary" onclick="exportMonthlyExcel()">📊 خروجی Excel</button>
+      </div>
+      <div class="rwrap">
+        <div id="mrSheet" class="rsheet"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>مدیریت و جستجوی گزارش‌های روزانه</h2>
+      <div class="search-bar">
+        <input id="drSearchBox" placeholder="جستجو در نام کارشناس یا تاریخ ..." oninput="renderDailyList()">
+        <button class="btn btn-secondary" onclick="exportReportsJSON()">⬇️ پشتیبان JSON</button>
+        <label class="btn btn-secondary" style="margin:0;">
+          ⬆️ بازیابی JSON
+          <input type="file" id="importReportsFile" accept=".json" style="display:none" onchange="importReportsJSON(event)">
+        </label>
+      </div>
+      <div style="overflow-x:auto;">
+      <table class="list-table" id="drListTable">
+        <thead>
+          <tr>
+            <th>تاریخ</th><th>کارشناس</th><th>تماس خروجی</th><th>سفارش</th><th>مبلغ فروش (ریال)</th><th>نرخ تبدیل</th><th>عملیات</th>
+          </tr>
+        </thead>
+        <tbody id="drListBody"></tbody>
+      </table>
+      </div>
+      <div id="drEmptyState" class="empty-state hidden">هنوز گزارش روزانه‌ای ثبت نشده است.</div>
+    </div>
+
+    <div class="panel">
+      <h2>گزارش‌های ماهانه ذخیره‌شده</h2>
+      <div style="overflow-x:auto;">
+      <table class="list-table" id="mrListTable">
+        <thead>
+          <tr><th>ماه</th><th>سال</th><th>جمع تماس خروجی</th><th>جمع سفارش</th><th>جمع مبلغ فروش (ریال)</th><th>میانگین نرخ تبدیل</th><th>عملیات</th></tr>
+        </thead>
+        <tbody id="mrListBody"></tbody>
+      </table>
+      </div>
+      <div id="mrEmptyState" class="empty-state hidden">هنوز گزارش ماهانه‌ای ثبت نشده است.</div>
+    </div>
+  </div>
+
+</div>
+<script>
+/* ======================= Jalali calendar utilities ======================= */
+function div(a,b){ return ~~(a/b); }
+function mod(a,b){ return a - b*Math.floor(a/b); }
+function g2d(gy,gm,gd){
+  var d = div((gy+div(gm-8,6)+100100)*1461,4)+div(153*mod(gm+9,12)+2,5)+gd-34840408;
+  d = d - div(div(gy+100100+div(gm-8,6),100)*3,4)+752;
+  return d;
+}
+function d2g(jdn){
+  var j,i,gd,gm,gy;
+  j = 4*jdn+139361631;
+  j = j + div(div(4*jdn+183187720,146097)*3,4)*4-3908;
+  i = div(mod(j,1461),4)*5+308;
+  gd = div(mod(i,153),5)+1;
+  gm = mod(div(i,153),12)+1;
+  gy = div(j,1461)-100100+div(8-gm,6);
+  return {gy:gy,gm:gm,gd:gd};
+}
+function jalCal(jy){
+  var breaks=[-61,9,38,199,426,686,756,818,1111,1181,1210,1635,2060,2097,2192,2262,2324,2394,2456,3178],
+      bl=breaks.length, gy=jy+621, leapJ=-14, jp=breaks[0],
+      jm, jump=0, leap, n, i, leapG, march;
+  if (jy < jp || jy >= breaks[bl-1]) throw new Error('Invalid Jalaali year ' + jy);
+  for (i = 1; i < bl; i += 1) {
+    jm = breaks[i]; jump = jm - jp;
+    if (jy < jm) break;
+    leapJ += div(jump,33)*8 + div(mod(jump,33),4);
+    jp = jm;
+  }
+  n = jy - jp;
+  leapJ += div(n,33)*8 + div(mod(n,33)+3,4);
+  if (mod(jump,33)===4 && jump-n===4) leapJ += 1;
+  leapG = div(gy,4) - div((div(gy,100)+1)*3,4) - 150;
+  march = 20 + leapJ - leapG;
+  if (jump - n < 6) n = n - jump + div(jump+4,33)*33;
+  leap = mod(mod(n+1,33)-1,4);
+  if (leap === -1) leap = 4;
+  return {leap:leap, gy:gy, march:march};
+}
+function j2d(jy,jm,jd){
+  var r = jalCal(jy);
+  return g2d(r.gy,3,r.march) + (jm-1)*31 - div(jm,7)*(jm-7) + jd - 1;
+}
+function d2j(jdn){
+  var gy = d2g(jdn).gy, jy = gy-621, r, jdn1f, k, jm, jd;
+  r = jalCal(jy);
+  jdn1f = g2d(r.gy,3,r.march);
+  k = jdn - jdn1f;
+  if (k >= 0){
+    if (k <= 185){ jm = 1 + div(k,31); jd = mod(k,31)+1; return {jy:jy,jm:jm,jd:jd}; }
+    k -= 186;
+  } else {
+    jy -= 1;
+    r = jalCal(jy);
+    jdn1f = g2d(r.gy,3,r.march);
+    k = jdn - jdn1f;
+  }
+  jm = 7 + div(k,30);
+  jd = mod(k,30)+1;
+  return {jy:jy,jm:jm,jd:jd};
+}
+function jalaaliToGregorianDate(jy,jm,jd){
+  var jdn = j2d(jy,jm,jd);
+  var g = d2g(jdn);
+  return new Date(g.gy, g.gm-1, g.gd);
+}
+function gregorianToJalali(date){
+  var gy=date.getFullYear(), gm=date.getMonth()+1, gd=date.getDate();
+  var jdn = g2d(gy,gm,gd);
+  return d2j(jdn);
+}
+var PERSIAN_MONTHS=['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
+function daysInJalaliMonth(jy,jm){
+  if(jm<=6) return 31;
+  if(jm<=11) return 30;
+  var thisFirst = j2d(jy,12,1);
+  var nextFirst = j2d(jy+1,1,1);
+  return nextFirst - thisFirst;
+}
+</script>
+<script>
+/* ======================= Number formatting ======================= */
+var FA_DIGITS=['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
+function toPersianDigits(str){
+  return String(str).replace(/[0-9]/g, function(d){ return FA_DIGITS[+d]; });
+}
+function toEnglishDigits(str){
+  var map={'۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9','٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'};
+  return String(str).replace(/[۰-۹٠-٩]/g, function(d){ return map[d]; });
+}
+function groupThousands(numStr){
+  numStr = String(numStr);
+  var neg = numStr.startsWith('-');
+  if(neg) numStr = numStr.slice(1);
+  var parts = numStr.split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg?'-':'') + parts.join('.');
+}
+function fmtNum(n){
+  n = Number(n)||0;
+  n = Math.round(n);
+  return toPersianDigits(groupThousands(n));
+}
+function fmtNumBold(n){
+  return '<span class="num">'+fmtNum(n)+'</span>';
+}
+function parseNum(v){
+  if(v===undefined||v===null||v==='') return 0;
+  var s = toEnglishDigits(String(v)).replace(/,/g,'').trim();
+  var n = parseFloat(s);
+  return isNaN(n)?0:n;
+}
+
+/* ======================= Persian number-to-words ======================= */
+var YEKAN=['','یک','دو','سه','چهار','پنج','شش','هفت','هشت','نه'];
+var DAHGAN=['','ده','بیست','سی','چهل','پنجاه','شصت','هفتاد','هشتاد','نود'];
+var DAHYEK=['ده','یازده','دوازده','سیزده','چهارده','پانزده','شانزده','هفده','هجده','نوزده'];
+var SADGAN=['','یکصد','دویست','سیصد','چهارصد','پانصد','ششصد','هفتصد','هشتصد','نهصد'];
+var MAGNITUDE=['','هزار','میلیون','میلیارد','بیلیون','بیلیارد'];
+function threeDigitToWords(n){
+  n = parseInt(n,10);
+  if(n===0) return '';
+  var s=Math.floor(n/100), d=Math.floor((n%100)/10), y=n%10;
+  var parts=[];
+  if(s>0) parts.push(SADGAN[s]);
+  if(d===1){ parts.push(DAHYEK[y]); }
+  else{
+    if(d>0) parts.push(DAHGAN[d]);
+    if(y>0) parts.push(YEKAN[y]);
+  }
+  return parts.join(' و ');
+}
+function numberToPersianWords(num){
+  num = Math.round(Math.abs(Number(num)||0));
+  if(num===0) return 'صفر';
+  var groups=[];
+  while(num>0){ groups.push(num%1000); num=Math.floor(num/1000); }
+  var words=[];
+  for(var i=groups.length-1;i>=0;i--){
+    if(groups[i]===0) continue;
+    var g = threeDigitToWords(groups[i]);
+    if(i>0) g += ' ' + MAGNITUDE[i];
+    words.push(g);
+  }
+  return words.join(' و ');
+}
+
+/* ======================= App State ======================= */
+var STORAGE_KEY='etehad_invoices_v1';
+var DEFAULT_NOTES_KEY='etehad_invoice_default_notes_v1';
+var currentInvoice = null;
+
+function todayJalali(){ return gregorianToJalali(new Date()); }
+
+function blankItem(idx){
+  return {row: idx, code:'', desc:'', qty:'', unit:'کیلوگرم', unitPrice:'', discount:0, tax:0};
+}
+
+function blankInvoice(){
+  var t = todayJalali();
+  return {
+    id: 'inv_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    issuer: '',
+    serial: '',
+    issueDate: {jy:t.jy, jm:t.jm, jd:t.jd},
+    validDate: {jy:t.jy, jm:t.jm, jd:t.jd},
+    seller: {name:'', province:'', county:'', city:'', address:'', nid:'', phone:''},
+    buyer: {name:'', province:'', county:'', address:'', nid:'', phone:''},
+    items: [blankItem(1)],
+    payType: 'cash',
+    notes: localStorage.getItem(DEFAULT_NOTES_KEY) || '',
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+}
+
+function loadAllInvoices(){
+  try{
+    var raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function saveAllInvoices(list){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+</script>
+<script>
+/* ======================= Date selects ======================= */
+function fillDateSelects(prefix, jy, jm, jd){
+  var ySel = document.getElementById(prefix+'Y'), mSel = document.getElementById(prefix+'M'), dSel = document.getElementById(prefix+'D');
+  ySel.innerHTML=''; mSel.innerHTML=''; dSel.innerHTML='';
+  var curY = todayJalali().jy;
+  for(var y=curY-3; y<=curY+3; y++){
+    var o=document.createElement('option'); o.value=y; o.textContent=toPersianDigits(y); if(y===jy) o.selected=true; ySel.appendChild(o);
+  }
+  for(var m=1;m<=12;m++){
+    var o2=document.createElement('option'); o2.value=m; o2.textContent=PERSIAN_MONTHS[m-1]; if(m===jm) o2.selected=true; mSel.appendChild(o2);
+  }
+  var dim = daysInJalaliMonth(jy||curY, jm||1);
+  for(var d=1; d<=dim; d++){
+    var o3=document.createElement('option'); o3.value=d; o3.textContent=toPersianDigits(d); if(d===jd) o3.selected=true; dSel.appendChild(o3);
+  }
+  ySel.onchange = mSel.onchange = function(){
+    var dim2 = daysInJalaliMonth(+ySel.value, +mSel.value);
+    var keepD = Math.min(+dSel.value||1, dim2);
+    dSel.innerHTML='';
+    for(var d2=1; d2<=dim2; d2++){
+      var oo=document.createElement('option'); oo.value=d2; oo.textContent=toPersianDigits(d2); if(d2===keepD) oo.selected=true; dSel.appendChild(oo);
+    }
+    renderSheet();
+  };
+  dSel.onchange = renderSheet;
+}
+function readDateSelect(prefix){
+  return {
+    jy: +document.getElementById(prefix+'Y').value,
+    jm: +document.getElementById(prefix+'M').value,
+    jd: +document.getElementById(prefix+'D').value
+  };
+}
+function fmtJalaliDate(dt){
+  if(!dt) return '';
+  return toPersianDigits(dt.jy) + '/' + toPersianDigits(String(dt.jm).padStart(2,'0')) + '/' + toPersianDigits(String(dt.jd).padStart(2,'0'));
+}
+
+/* ======================= Items editor rendering ======================= */
+function addItemRow(){
+  currentInvoice.items.push(blankItem(currentInvoice.items.length+1));
+  renderItemsEditor();
+  renderSheet();
+}
+function removeItemRow(idx){
+  if(currentInvoice.items.length<=1){ toast('حداقل یک ردیف باید وجود داشته باشد'); return; }
+  currentInvoice.items.splice(idx,1);
+  currentInvoice.items.forEach(function(it,i){ it.row=i+1; });
+  renderItemsEditor();
+  renderSheet();
+}
+function renderItemsEditor(){
+  var body = document.getElementById('itemsEditorBody');
+  body.innerHTML='';
+  currentInvoice.items.forEach(function(it, idx){
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>'+toPersianDigits(idx+1)+'</td>'+
+      '<td><input data-f="code" value="'+escAttr(it.code)+'"></td>'+
+      '<td><input class="desc-input" data-f="desc" value="'+escAttr(it.desc)+'"></td>'+
+      '<td><input data-f="qty" value="'+escAttr(it.qty)+'" inputmode="decimal"></td>'+
+      '<td><input data-f="unit" value="'+escAttr(it.unit)+'" list="unitList" placeholder="کیلوگرم"></td>'+
+      '<td><input data-f="unitPrice" value="'+escAttr(it.unitPrice)+'" inputmode="decimal"></td>'+
+      '<td style="text-align:center;font-weight:900;">'+fmtNum(parseNum(it.qty)*parseNum(it.unitPrice))+'</td>'+
+      '<td><input data-f="discount" value="'+escAttr(it.discount)+'" inputmode="decimal"></td>'+
+      '<td><input data-f="tax" value="'+escAttr(it.tax)+'" inputmode="decimal"></td>'+
+      '<td><button class="row-del" onclick="removeItemRow('+idx+')">×</button></td>';
+    tr.querySelectorAll('input').forEach(function(inp){
+      inp.addEventListener('input', function(){
+        var f = inp.getAttribute('data-f');
+        it[f] = inp.value;
+        renderSheet();
+        tr.children[6].textContent = toPersianDigits(groupThousands(Math.round(parseNum(it.qty)*parseNum(it.unitPrice))));
+      });
+    });
+    body.appendChild(tr);
+  });
+}
+function escAttr(v){ return (v===undefined||v===null)?'':String(v).replace(/"/g,'&quot;'); }
+
+/* ======================= Compute totals ======================= */
+function computeTotals(inv){
+  var sumTotal=0, sumDiscount=0, sumAfterDiscount=0, sumTax=0, sumGrand=0;
+  inv.items.forEach(function(it){
+    var qty=parseNum(it.qty), price=parseNum(it.unitPrice), disc=parseNum(it.discount), tax=parseNum(it.tax);
+    var total = qty*price;
+    var after = total - disc;
+    var grand = after + tax;
+    sumTotal += total; sumDiscount += disc; sumAfterDiscount += after; sumTax += tax; sumGrand += grand;
+  });
+  return {sumTotal:sumTotal, sumDiscount:sumDiscount, sumAfterDiscount:sumAfterDiscount, sumTax:sumTax, sumGrand:sumGrand};
+}
+
+/* ======================= Build the printable sheet ======================= */
+function renderSheet(){
+  var inv = currentInvoice;
+  if(!inv) return;
+  var t = computeTotals(inv);
+  var itemsRows = inv.items.map(function(it){
+    var qty=parseNum(it.qty), price=parseNum(it.unitPrice), disc=parseNum(it.discount), tax=parseNum(it.tax);
+    var total=qty*price, after=total-disc, grand=after+tax;
+    return '<tr class="items-body">'+
+      '<td>'+toPersianDigits(it.row)+'</td>'+
+      '<td>'+toPersianDigits(escHtml(it.code))+'</td>'+
+      '<td class="desc-cell">'+escHtml(it.desc)+'</td>'+
+      '<td class="num">'+fmtNum(qty)+'</td>'+
+      '<td>'+escHtml(it.unit)+'</td>'+
+      '<td class="num">'+fmtNum(price)+'</td>'+
+      '<td class="num">'+fmtNum(total)+'</td>'+
+      '<td class="num">'+fmtNum(disc)+'</td>'+
+      '<td class="num">'+fmtNum(after)+'</td>'+
+      '<td class="num">'+fmtNum(tax)+'</td>'+
+      '<td class="num">'+fmtNum(grand)+'</td>'+
+    '</tr>';
+  }).join('');
+
+  var wordsAmount = numberToPersianWords(Math.round(t.sumGrand));
+
+  var html = ''+
+  '<div class="sheet-top">'+
+    '<div>'+
+      '<div class="meta-line"><b>شماره سریال:</b> <span class="num">'+toPersianDigits(escHtml(inv.serial||'—'))+'</span></div>'+
+    '</div>'+
+    '<div class="sheet-header-title">صورتحساب فروش کالا یا خدمات</div>'+
+    '<div style="text-align:left;">'+
+      '<div class="meta-line"><b>تاریخ صدور:</b> <span class="num">'+fmtJalaliDate(inv.issueDate)+'</span></div>'+
+      '<div class="meta-line"><b>تاریخ اعتبار:</b> <span class="num">'+fmtJalaliDate(inv.validDate)+'</span></div>'+
+    '</div>'+
+  '</div>'+
+
+  '<table class="sheet-table party-table">'+
+    '<tr><td colspan="6" class="stitle">مشخصات فروشنده</td></tr>'+
+    '<tr>'+
+      '<td class="lbl" colspan="2">نام شخص حقیقی / حقوقی:</td><td class="val-cell name-val" colspan="4">'+escHtml(inv.seller.name)+'</td>'+
+    '</tr>'+
+    '<tr>'+
+      '<td class="val-cell">استان: '+escHtml(inv.seller.province)+'</td>'+
+      '<td class="val-cell">شهرستان: '+escHtml(inv.seller.county)+'</td>'+
+      '<td class="val-cell">شهر: '+escHtml(inv.seller.city)+'</td>'+
+      '<td class="lbl" colspan="2">شناسه ملی:</td>'+
+      '<td class="val-cell num">'+toPersianDigits(escHtml(inv.seller.nid))+'</td>'+
+    '</tr>'+
+    '<tr>'+
+      '<td class="lbl" colspan="2">نشانی:</td><td class="val-cell" colspan="2">'+escHtml(inv.seller.address)+'</td>'+
+      '<td class="lbl">تلفن:</td><td class="val-cell num">'+toPersianDigits(escHtml(inv.seller.phone))+'</td>'+
+    '</tr>'+
+  '</table>'+
+
+  '<table class="sheet-table party-table">'+
+    '<tr><td colspan="6" class="stitle">مشخصات خریدار</td></tr>'+
+    '<tr>'+
+      '<td class="lbl" colspan="2">نام شخص حقیقی / حقوقی:</td><td class="val-cell name-val" colspan="2">'+escHtml(inv.buyer.name)+'</td>'+
+      '<td class="lbl">شناسه ملی:</td><td class="val-cell num">'+toPersianDigits(escHtml(inv.buyer.nid))+'</td>'+
+    '</tr>'+
+    '<tr>'+
+      '<td class="lbl" colspan="2">استان: '+escHtml(inv.buyer.province)+'</td>'+
+      '<td class="val-cell" colspan="2">شهرستان: '+escHtml(inv.buyer.county)+'</td>'+
+      '<td class="lbl">تلفن:</td><td class="val-cell num">'+toPersianDigits(escHtml(inv.buyer.phone))+'</td>'+
+    '</tr>'+
+    '<tr>'+
+      '<td class="lbl" colspan="2">نشانی:</td><td class="val-cell" colspan="4">'+escHtml(inv.buyer.address)+'</td>'+
+    '</tr>'+
+  '</table>'+
+
+  '<table class="sheet-table" style="margin-top:2px;">'+
+    '<tr class="items-head">'+
+      '<th style="width:3%;">ردیف</th>'+
+      '<th style="width:5%;">کد کالا</th>'+
+      '<th style="width:17%;">شرح کالا یا خدمات</th>'+
+      '<th style="width:6%;">تعداد</th>'+
+      '<th style="width:6%;">واحد</th>'+
+      '<th style="width:9%;">مبلغ واحد (ریال)</th>'+
+      '<th style="width:12%;">مبلغ کل (ریال)</th>'+
+      '<th style="width:8%;">مبلغ تخفیف (ریال)</th>'+
+      '<th style="width:12%;">مبلغ کل پس از تخفیف (ریال)</th>'+
+      '<th style="width:8%;">جمع مالیات و عوارض (ریال)</th>'+
+      '<th style="width:14%;">جمع کل بعلاوه مالیات (ریال)</th>'+
+    '</tr>'+
+    itemsRows+
+    '<tr class="grand-row">'+
+      '<td colspan="6" style="text-align:left;">جمع کل (ریال)</td>'+
+      '<td class="num">'+fmtNum(t.sumTotal)+'</td>'+
+      '<td class="num">'+fmtNum(t.sumDiscount)+'</td>'+
+      '<td class="num">'+fmtNum(t.sumAfterDiscount)+'</td>'+
+      '<td class="num">'+fmtNum(t.sumTax)+'</td>'+
+      '<td class="num">'+fmtNum(t.sumGrand)+'</td>'+
+    '</tr>'+
+    '<tr class="terms-row">'+
+      '<td colspan="4"><b>شرایط و نحوه فروش:</b> '+(inv.payType==='cash'?'☑ نقدی &nbsp;&nbsp; ☐ غیر نقدی':'☐ نقدی &nbsp;&nbsp; ☑ غیر نقدی')+'</td>'+
+      '<td colspan="7"><b>جمع (به حروف):</b> '+escHtml(wordsAmount)+' ریال</td>'+
+    '</tr>'+
+  '</table>'+
+  '<div class="notes-print"><b>توضیحات:</b> '+escHtml(inv.notes||'')+'</div>'+
+  '<table class="sheet-table" style="margin-top:2px;">'+
+    '<tr class="sign-row"><td style="width:50%;">مهر و امضاء فروشنده:</td><td>مهر و امضاء خریدار:</td></tr>'+
+  '</table>';
+
+  document.getElementById('sheet').innerHTML = html;
+}
+function escHtml(v){
+  if(v===undefined||v===null) return '';
+  return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+<script>
+/* ======================= Form <-> state binding ======================= */
+var FIELD_MAP = {
+  in_issuer: ['issuer'],
+  in_serial: ['serial'],
+  s_name:['seller','name'], s_province:['seller','province'], s_county:['seller','county'],
+  s_city:['seller','city'], s_address:['seller','address'], s_nid:['seller','nid'], s_phone:['seller','phone'],
+  b_name:['buyer','name'], b_province:['buyer','province'], b_county:['buyer','county'],
+  b_address:['buyer','address'], b_nid:['buyer','nid'], b_phone:['buyer','phone'],
+  in_payType:['payType'], in_notes:['notes']
+};
+function bindFieldEvents(){
+  Object.keys(FIELD_MAP).forEach(function(id){
+    var el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input', function(){ writeField(id, el.value); renderSheet(); });
+    el.addEventListener('change', function(){ writeField(id, el.value); renderSheet(); });
+  });
+}
+function writeField(id, val){
+  var path = FIELD_MAP[id];
+  if(path.length===1) currentInvoice[path[0]] = val;
+  else currentInvoice[path[0]][path[1]] = val;
+}
+function fillFormFromState(){
+  var inv = currentInvoice;
+  document.getElementById('in_issuer').value = inv.issuer||'';
+  document.getElementById('in_serial').value = inv.serial||'';
+  document.getElementById('s_name').value = inv.seller.name||'';
+  document.getElementById('s_province').value = inv.seller.province||'';
+  document.getElementById('s_county').value = inv.seller.county||'';
+  document.getElementById('s_city').value = inv.seller.city||'';
+  document.getElementById('s_address').value = inv.seller.address||'';
+  document.getElementById('s_nid').value = inv.seller.nid||'';
+  document.getElementById('s_phone').value = inv.seller.phone||'';
+  document.getElementById('b_name').value = inv.buyer.name||'';
+  document.getElementById('b_province').value = inv.buyer.province||'';
+  document.getElementById('b_county').value = inv.buyer.county||'';
+  document.getElementById('b_address').value = inv.buyer.address||'';
+  document.getElementById('b_nid').value = inv.buyer.nid||'';
+  document.getElementById('b_phone').value = inv.buyer.phone||'';
+  document.getElementById('in_payType').value = inv.payType||'cash';
+  document.getElementById('in_notes').value = inv.notes||'';
+  fillDateSelects('in_issue', inv.issueDate.jy, inv.issueDate.jm, inv.issueDate.jd);
+  fillDateSelects('in_valid', inv.validDate.jy, inv.validDate.jm, inv.validDate.jd);
+  renderItemsEditor();
+  renderSheet();
+}
+
+/* ======================= Notes default template ======================= */
+function saveNotesAsDefault(){
+  localStorage.setItem(DEFAULT_NOTES_KEY, document.getElementById('in_notes').value);
+  toast('متن توضیحات به‌عنوان پیش‌فرض ذخیره شد');
+}
+function insertDefaultNotes(){
+  var def = localStorage.getItem(DEFAULT_NOTES_KEY) || '';
+  document.getElementById('in_notes').value = def;
+  currentInvoice.notes = def;
+  renderSheet();
+}
+function clearNotes(){
+  document.getElementById('in_notes').value='';
+  currentInvoice.notes='';
+  renderSheet();
+  toast('توضیحات حذف شد');
+}
+
+/* ======================= New / Save / Load ======================= */
+function newInvoice(){
+  currentInvoice = blankInvoice();
+  fillFormFromState();
+  toast('یک فاکتور خالی جدید ایجاد شد');
+}
+function collectDatesFromSelects(){
+  currentInvoice.issueDate = readDateSelect('in_issue');
+  currentInvoice.validDate = readDateSelect('in_valid');
+}
+function saveInvoice(){
+  collectDatesFromSelects();
+  currentInvoice.updatedAt = Date.now();
+  var list = loadAllInvoices();
+  var idx = list.findIndex(function(x){ return x.id===currentInvoice.id; });
+  if(idx>=0) list[idx] = currentInvoice; else list.push(currentInvoice);
+  saveAllInvoices(list);
+  toast('فاکتور با موفقیت ذخیره شد');
+  renderList();
+}
+function loadInvoiceById(id){
+  var list = loadAllInvoices();
+  var inv = list.find(function(x){ return x.id===id; });
+  if(!inv) return;
+  currentInvoice = inv;
+  fillFormFromState();
+  switchTab('new');
+}
+function deleteInvoice(id){
+  if(!confirm('آیا از حذف این فاکتور مطمئن هستید؟')) return;
+  var list = loadAllInvoices().filter(function(x){ return x.id!==id; });
+  saveAllInvoices(list);
+  renderList();
+  toast('فاکتور حذف شد');
+}
+
+/* ======================= Tabs ======================= */
+function switchTab(tab){
+  document.getElementById('tabNew').classList.toggle('hidden', tab!=='new');
+  document.getElementById('tabManage').classList.toggle('hidden', tab!=='manage');
+  document.getElementById('tabDaily').classList.toggle('hidden', tab!=='daily');
+  document.getElementById('tabReports').classList.toggle('hidden', tab!=='reports');
+  document.getElementById('tabBtnNew').classList.toggle('active', tab==='new');
+  document.getElementById('tabBtnManage').classList.toggle('active', tab==='manage');
+  document.getElementById('tabBtnDaily').classList.toggle('active', tab==='daily');
+  document.getElementById('tabBtnReports').classList.toggle('active', tab==='reports');
+  if(tab==='manage') renderList();
+  if(tab==='reports'){ renderDailyList(); renderMonthlyList(); }
+}
+
+/* ======================= Management list ======================= */
+function renderList(){
+  var list = loadAllInvoices().slice().sort(function(a,b){ return b.updatedAt-a.updatedAt; });
+  var q = (document.getElementById('searchBox').value||'').trim();
+  var qEn = toEnglishDigits(q).toLowerCase();
+  if(q){
+    list = list.filter(function(inv){
+      var hay = [
+        inv.issuer, inv.serial, inv.seller.name, inv.buyer.name, inv.buyer.nid, inv.buyer.phone,
+        inv.notes, fmtJalaliDate(inv.issueDate),
+        (inv.items||[]).map(function(it){ return it.desc+' '+it.code; }).join(' ')
+      ].join(' ');
+      hay = toEnglishDigits(hay).toLowerCase();
+      return hay.indexOf(qEn)>=0;
+    });
+  }
+  var body = document.getElementById('listBody');
+  body.innerHTML='';
+  document.getElementById('emptyState').classList.toggle('hidden', list.length>0);
+  list.forEach(function(inv){
+    var t = computeTotals(inv);
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="num">'+toPersianDigits(escHtml(inv.serial||'—'))+'</td>'+
+      '<td class="num">'+fmtJalaliDate(inv.issueDate)+'</td>'+
+      '<td>'+escHtml(inv.buyer.name||'—')+'</td>'+
+      '<td>'+escHtml(inv.issuer||'—')+'</td>'+
+      '<td class="num">'+fmtNum(t.sumGrand)+'</td>'+
+      '<td><span class="badge '+(inv.payType==='cash'?'cash':'noncash')+'">'+(inv.payType==='cash'?'نقدی':'غیر نقدی')+'</span></td>'+
+      '<td class="list-actions">'+
+        '<button class="btn btn-secondary btn-sm" onclick="loadInvoiceById(\''+inv.id+'\')">ویرایش/مشاهده</button>'+
+        '<button class="btn btn-danger btn-sm" onclick="deleteInvoice(\''+inv.id+'\')">حذف</button>'+
+      '</td>';
+    body.appendChild(tr);
+  });
+}
+
+/* ======================= Backup / restore ======================= */
+function exportAllJSON(){
+  var data = JSON.stringify(loadAllInvoices(), null, 2);
+  var blob = new Blob([data], {type:'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'etehad-invoices-backup.json';
+  a.click();
+}
+function importAllJSON(evt){
+  var file = evt.target.files[0];
+  if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(){
+    try{
+      var incoming = JSON.parse(reader.result);
+      if(!Array.isArray(incoming)) throw new Error('bad format');
+      var existing = loadAllInvoices();
+      var ids = new Set(existing.map(function(x){return x.id;}));
+      incoming.forEach(function(inv){ if(!ids.has(inv.id)) existing.push(inv); });
+      saveAllInvoices(existing);
+      renderList();
+      toast('بازیابی با موفقیت انجام شد');
+    }catch(e){ toast('فایل نامعتبر است'); }
+  };
+  reader.readAsText(file);
+  evt.target.value='';
+}
+
+/* ======================= Toast ======================= */
+var toastTimer;
+function toast(msg){
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ el.classList.remove('show'); }, 2400);
+}
+</script>
+<script>
+/* ======================= Fit-to-one-page scaling ======================= */
+function fitSheetToPage(){
+  var sheet = document.getElementById('sheet');
+  var wrap = document.querySelector('.sheet-wrap');
+  sheet.style.transform = 'none';
+  var ruler = document.getElementById('pageRuler');
+  var availH = ruler.clientHeight;
+  var contentH = sheet.scrollHeight;
+  if(contentH > availH && availH>0){
+    var scale = availH / contentH;
+    sheet.style.transform = 'scale('+scale.toFixed(4)+')';
+    sheet.style.transformOrigin = 'top center';
+    wrap.style.height = availH + 'px';
+    wrap.style.overflow = 'hidden';
+  } else {
+    wrap.style.height = '';
+    wrap.style.overflow = '';
+  }
+  return {scale: (contentH>availH)? availH/contentH : 1, availH: availH};
+}
+function releaseSheetFit(){
+  var wrap = document.querySelector('.sheet-wrap');
+  wrap.style.height=''; wrap.style.overflow='';
+}
+window.addEventListener('beforeprint', function(){ fitSheetToPage(); });
+window.addEventListener('afterprint', function(){ releaseSheetFit(); });
+
+function doPrint(){
+  collectDatesFromSelects();
+  renderSheet();
+  fitSheetToPage();
+  setTimeout(function(){ window.print(); }, 60);
+}
+
+/* ======================= PDF export ======================= */
+function exportPDF(){
+  collectDatesFromSelects();
+  renderSheet();
+  fitSheetToPage();
+  var sheet = document.getElementById('sheet');
+  toast('در حال ساخت PDF ...');
+  html2canvas(sheet, {scale:2, backgroundColor:'#ffffff'}).then(function(canvas){
+    releaseSheetFit();
+    var imgData = canvas.toDataURL('image/jpeg', 0.95);
+    var pdf = new window.jspdf.jsPDF({orientation:'landscape', unit:'mm', format:'a4'});
+    var pageW = pdf.internal.pageSize.getWidth();
+    var pageH = pdf.internal.pageSize.getHeight();
+    var margin = 6;
+    var maxW = pageW - margin*2, maxH = pageH - margin*2;
+    var wMM = (canvas.width) / 2 * (25.4/96);
+    var hMM = (canvas.height) / 2 * (25.4/96);
+    var fit = Math.min(maxW/wMM, maxH/hMM);
+    var finalW = wMM*fit, finalH = hMM*fit;
+    var x = (pageW-finalW)/2, y = (pageH-finalH)/2;
+    pdf.addImage(imgData, 'JPEG', x, y, finalW, finalH);
+    var serial = (currentInvoice.serial||'invoice').toString().replace(/[^a-zA-Z0-9\u0600-\u06FF]/g,'_');
+    pdf.save('Etehad-Invoice-'+serial+'.pdf');
+    toast('فایل PDF ساخته شد');
+  }).catch(function(err){
+    releaseSheetFit();
+    toast('خطا در ساخت PDF');
+    console.error(err);
+  });
+}
+
+/* ======================= Excel export ======================= */
+function exportExcel(){
+  collectDatesFromSelects();
+  var inv = currentInvoice;
+  var t = computeTotals(inv);
+  var ws_data = [];
+  var merges = [];
+  function pushRow(arr){ ws_data.push(arr); return ws_data.length-1; }
+  function mergeRange(r1,c1,r2,c2){ merges.push({s:{r:r1,c:c1}, e:{r:r2,c:c2}}); }
+
+  var LASTCOL = 10;
+
+  pushRow(['شماره سریال:', '', '', '', '', '', '', '', '', 'تاریخ صدور:', toPersianDigits2(inv.serial)]);
+  var rIdx0 = ws_data.length-1;
+  pushRow(['', '', '', '', '', '', '', '', '', 'تاریخ اعتبار:', fmtJalaliDate(inv.validDate)]);
+  ws_data[rIdx0][9]='تاریخ صدور:'; ws_data[rIdx0][10]=fmtJalaliDate(inv.issueDate);
+
+  var r = pushRow(['صورتحساب فروش کالا یا خدمات']);
+  mergeRange(r,0,r,LASTCOL);
+
+  r = pushRow(['مشخصات فروشنده']); mergeRange(r,0,r,LASTCOL);
+  r = pushRow(['نام شخص حقیقی / حقوقی:', inv.seller.name]); mergeRange(r,1,r,LASTCOL);
+  r = pushRow(['استان:', inv.seller.province, 'شهرستان:', inv.seller.county, 'شهر:', inv.seller.city, 'شناسه ملی:', inv.seller.nid]);
+  r = pushRow(['نشانی:', inv.seller.address, '', '', '', '', 'تلفن:', inv.seller.phone]); mergeRange(r,1,r,5);
+
+  r = pushRow(['مشخصات خریدار']); mergeRange(r,0,r,LASTCOL);
+  r = pushRow(['نام شخص حقیقی / حقوقی:', inv.buyer.name, '', '', 'شناسه ملی:', inv.buyer.nid]); mergeRange(r,1,r,3);
+  r = pushRow(['استان:', inv.buyer.province, 'شهرستان:', inv.buyer.county, '', '', 'تلفن:', inv.buyer.phone]);
+  r = pushRow(['نشانی:', inv.buyer.address]); mergeRange(r,1,r,LASTCOL);
+
+  pushRow(['ردیف','کد کالا','شرح کالا یا خدمات','تعداد','واحد اندازه گیری','مبلغ واحد (ریال)','مبلغ کل (ریال)','مبلغ تخفیف (ریال)','مبلغ کل پس از تخفیف (ریال)','جمع مالیات و عوارض (ریال)','جمع کل بعلاوه مالیات (ریال)']);
+
+  inv.items.forEach(function(it){
+    var qty=parseNum(it.qty), price=parseNum(it.unitPrice), disc=parseNum(it.discount), tax=parseNum(it.tax);
+    var total=qty*price, after=total-disc, grand=after+tax;
+    pushRow([it.row, it.code, it.desc, qty, it.unit, price, total, disc, after, tax, grand]);
+  });
+
+  r = pushRow(['جمع کل (ریال)','','','','','', t.sumTotal, t.sumDiscount, t.sumAfterDiscount, t.sumTax, t.sumGrand]);
+  mergeRange(r,0,r,5);
+
+  r = pushRow(['شرایط و نحوه فروش:', inv.payType==='cash'?'نقدی':'غیر نقدی']); mergeRange(r,2,r,LASTCOL);
+  r = pushRow(['جمع (به حروف):', numberToPersianWords(Math.round(t.sumGrand))+' ریال']); mergeRange(r,1,r,LASTCOL);
+
+  r = pushRow(['توضیحات:', inv.notes||'']); mergeRange(r,1,r,LASTCOL);
+
+  r = pushRow(['مهر و امضاء فروشنده:', '', '', '', '', '','مهر و امضاء خریدار:']);
+  mergeRange(r,0,r,4); mergeRange(r,6,r,LASTCOL);
+
+  var infoSheetData = [
+    ['نام صادر کننده فاکتور (داخلی)', inv.issuer||''],
+    ['شماره سریال', inv.serial||''],
+    ['تاریخ صدور', fmtJalaliDate(inv.issueDate)],
+    ['تاریخ اعتبار', fmtJalaliDate(inv.validDate)],
+    ['جمع کل نهایی (ریال)', Math.round(t.sumGrand)]
+  ];
+
+  var wb = XLSX.utils.book_new();
+  var ws = XLSX.utils.aoa_to_sheet(ws_data);
+  ws['!merges'] = merges;
+  ws['!cols'] = [{wch:12},{wch:12},{wch:26},{wch:8},{wch:12},{wch:14},{wch:14},{wch:12},{wch:16},{wch:14},{wch:16}];
+  ws['!views'] = [{RTL:true}];
+  XLSX.utils.book_append_sheet(wb, ws, 'فاکتور');
+
+  var ws2 = XLSX.utils.aoa_to_sheet(infoSheetData);
+  ws2['!views'] = [{RTL:true}];
+  ws2['!cols'] = [{wch:28},{wch:22}];
+  XLSX.utils.book_append_sheet(wb, ws2, 'اطلاعات مدیریتی');
+
+  var serial = (inv.serial||'invoice').toString().replace(/[^a-zA-Z0-9\u0600-\u06FF]/g,'_');
+  XLSX.writeFile(wb, 'Etehad-Invoice-'+serial+'.xlsx');
+  toast('فایل اکسل ساخته شد');
+}
+function toPersianDigits2(v){ return toPersianDigits(v===undefined||v===null?'':v); }
+
+/* ======================= Init ======================= */
+window.addEventListener('DOMContentLoaded', function(){
+  bindFieldEvents();
+  currentInvoice = blankInvoice();
+  fillFormFromState();
+  renderList();
+});
+</script>
+
+<!-- hidden ruler used only to measure one printable page's pixel height -->
+<div id="pageRuler" style="position:absolute;visibility:hidden;pointer-events:none;top:-9999px;left:-9999px;width:285mm;height:198mm;"></div>
+
+<!-- =====================================================================
+     گزارش روزانه و ماهانه (تلفنی فروش) — ماژول مستقل، جدا از بخش فاکتور
+     ===================================================================== -->
+<script>
+(function(){
+
+  /* ------------------ Metrics definition ------------------ */
+  var DR_METRICS = [
+    {key:"totalCalls",   label:"تعداد کل تماس‌های برقرارشده (ورودی و خروجی)", unit:"تماس"},
+    {key:"outCalls",     label:"تعداد تماس‌های خروجی (تماس با مشتری)",        unit:"تماس"},
+    {key:"inCalls",      label:"تعداد تماس‌های ورودی",                         unit:"تماس"},
+    {key:"convCalls",    label:"تعداد تماس‌های موفق و منجر به مکالمه",         unit:"تماس"},
+    {key:"orders",       label:"تعداد سفارش‌های ثبت‌شده",                      unit:"سفارش"},
+    {key:"salesAmount",  label:"مبلغ کل فروش ثبت‌شده",                          unit:"ریال"},
+    {key:"newCustomers", label:"تعداد مشتریان جدید جذب‌شده",                    unit:"مشتری"},
+    {key:"followUps",    label:"تعداد پیگیری‌های انجام‌شده از مشتریان قبلی",    unit:"مورد"},
+    {key:"complaints",   label:"تعداد شکایات یا مشکلات ثبت‌شده مشتریان",       unit:"مورد"},
+    {key:"convRate",     label:"نرخ تبدیل تماس به فروش",                       unit:"درصد", derived:true}
+  ];
+  var DR_STORAGE_KEY = 'etehad_daily_reports_v1';
+  var MR_STORAGE_KEY = 'etehad_monthly_reports_v1';
+  var currentDaily = null;
+  var currentMonthly = null;
+
+  /* ------------------ Storage ------------------ */
+  function loadAllDaily(){ try{ return JSON.parse(localStorage.getItem(DR_STORAGE_KEY))||[]; }catch(e){ return []; } }
+  function saveAllDaily(list){ localStorage.setItem(DR_STORAGE_KEY, JSON.stringify(list)); }
+  function loadAllMonthly(){ try{ return JSON.parse(localStorage.getItem(MR_STORAGE_KEY))||[]; }catch(e){ return []; } }
+  function saveAllMonthly(list){ localStorage.setItem(MR_STORAGE_KEY, JSON.stringify(list)); }
+
+  function blankDaily(){
+    var t = todayJalali();
+    var d = { id:'dr_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), fullName:'', date:{jy:t.jy,jm:t.jm,jd:t.jd},
+      metrics:{}, notes:{n1:'',n2:'',n3:'',n4:'',n5:''}, createdAt:Date.now(), updatedAt:Date.now() };
+    DR_METRICS.forEach(function(m){ d.metrics[m.key] = ''; });
+    return d;
+  }
+
+  /* ------------------ Generic Jalali date-select helper (independent of invoice's fillDateSelects) ------------------ */
+  function fillDateSelectsRO(prefix, jy, jm, jd, onChange){
+    var ySel=document.getElementById(prefix+'Y'), mSel=document.getElementById(prefix+'M'), dSel=document.getElementById(prefix+'D');
+    ySel.innerHTML=''; mSel.innerHTML=''; dSel.innerHTML='';
+    var curY = todayJalali().jy;
+    for(var y=curY-3; y<=curY+3; y++){
+      var o=document.createElement('option'); o.value=y; o.textContent=toPersianDigits(y); if(y===jy) o.selected=true; ySel.appendChild(o);
+    }
+    for(var m=1;m<=12;m++){
+      var o2=document.createElement('option'); o2.value=m; o2.textContent=PERSIAN_MONTHS[m-1]; if(m===jm) o2.selected=true; mSel.appendChild(o2);
+    }
+    var dim = daysInJalaliMonth(jy||curY, jm||1);
+    for(var d=1; d<=dim; d++){
+      var o3=document.createElement('option'); o3.value=d; o3.textContent=toPersianDigits(d); if(d===jd) o3.selected=true; dSel.appendChild(o3);
+    }
+    ySel.onchange = mSel.onchange = function(){
+      var dim2 = daysInJalaliMonth(+ySel.value, +mSel.value);
+      var keepD = Math.min(+dSel.value||1, dim2);
+      dSel.innerHTML='';
+      for(var d2=1; d2<=dim2; d2++){
+        var oo=document.createElement('option'); oo.value=d2; oo.textContent=toPersianDigits(d2); if(d2===keepD) oo.selected=true; dSel.appendChild(oo);
+      }
+      if(onChange) onChange();
+    };
+    dSel.onchange = function(){ if(onChange) onChange(); };
+  }
+  function readDateSelectRO(prefix){
+    return { jy:+document.getElementById(prefix+'Y').value, jm:+document.getElementById(prefix+'M').value, jd:+document.getElementById(prefix+'D').value };
+  }
+
+  /* ------------------ Metrics table ------------------ */
+  function renderDrMetricsBody(){
+    var tbody = document.getElementById('drMetricsBody');
+    tbody.innerHTML = '';
+    DR_METRICS.forEach(function(m){
+      var tr = document.createElement('tr');
+      var tdLabel = document.createElement('td'); tdLabel.textContent = m.label; tdLabel.style.textAlign='right'; tdLabel.style.fontWeight='700';
+      var tdUnit = document.createElement('td'); tdUnit.textContent = m.unit; tdUnit.style.textAlign='center'; tdUnit.style.color='#6b7280';
+      var tdVal = document.createElement('td');
+      var input = document.createElement('input');
+      input.type='number'; input.min='0'; input.step = m.key==='salesAmount' ? 1000 : 1;
+      input.id = 'drm_'+m.key; input.style.width='100%'; input.style.textAlign='center'; input.style.padding='7px';
+      input.style.border='1.5px solid #c9a227'; input.style.borderRadius='6px'; input.style.fontWeight='800';
+      if(m.derived){ input.disabled=true; input.title='محاسبه خودکار: سفارش ÷ تماس خروجی × ۱۰۰'; input.style.background='#eef6f4'; }
+      tdVal.appendChild(input);
+      tr.appendChild(tdLabel); tr.appendChild(tdUnit); tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+    });
+    document.getElementById('drm_outCalls').addEventListener('input', recalcDrRate);
+    document.getElementById('drm_orders').addEventListener('input', recalcDrRate);
+    DR_METRICS.forEach(function(m){
+      if(!m.derived) document.getElementById('drm_'+m.key).addEventListener('input', renderDrSheet);
+    });
+  }
+  function recalcDrRate(){
+    var out = parseFloat(document.getElementById('drm_outCalls').value)||0;
+    var ord = parseFloat(document.getElementById('drm_orders').value)||0;
+    document.getElementById('drm_convRate').value = out>0 ? (ord/out*100).toFixed(1) : '';
+    renderDrSheet();
+  }
+
+  /* ------------------ Form <-> state ------------------ */
+  function collectDailyForm(){
+    var d = { id:currentDaily.id, fullName:document.getElementById('dr_fullName').value, date:readDateSelectRO('dr_date'),
+      metrics:{}, notes:{
+        n1:document.getElementById('dr_n1').value, n2:document.getElementById('dr_n2').value, n3:document.getElementById('dr_n3').value,
+        n4:document.getElementById('dr_n4').value, n5:document.getElementById('dr_n5').value
+      }, createdAt:currentDaily.createdAt, updatedAt:Date.now() };
+    DR_METRICS.forEach(function(m){ d.metrics[m.key] = document.getElementById('drm_'+m.key).value; });
+    return d;
+  }
+  function fillDailyForm(d){
+    currentDaily = d;
+    document.getElementById('dr_fullName').value = d.fullName||'';
+    fillDateSelectsRO('dr_date', d.date.jy, d.date.jm, d.date.jd, renderDrSheet);
+    DR_METRICS.forEach(function(m){ document.getElementById('drm_'+m.key).value = (d.metrics && d.metrics[m.key])||''; });
+    var nt = d.notes||{};
+    document.getElementById('dr_n1').value=nt.n1||''; document.getElementById('dr_n2').value=nt.n2||'';
+    document.getElementById('dr_n3').value=nt.n3||''; document.getElementById('dr_n4').value=nt.n4||'';
+    document.getElementById('dr_n5').value=nt.n5||'';
+    recalcDrRate();
+  }
+
+  /* ------------------ Preview sheet ------------------ */
+  function renderDrSheet(){
+    if(!currentDaily) return;
+    var d = collectDailyForm();
+    var rows = DR_METRICS.map(function(m){
+      var v = d.metrics[m.key];
+      var disp = m.key==='salesAmount' ? fmtNum(parseNum(v)) : (m.key==='convRate' ? toPersianDigits(v||'۰')+'٪' : toPersianDigits(v||'0'));
+      return '<tr><td class="rlabel">'+escHtml(m.label)+'</td><td style="text-align:center;">'+escHtml(m.unit)+'</td><td class="rval">'+disp+'</td></tr>';
+    }).join('');
+    var notesHtml = ['n1','n2','n3','n4','n5'].map(function(k,i){
+      var titles = ['خلاصه عملکرد و مهم‌ترین رویدادهای امروز','چالش‌ها و موانع پیش‌آمده','بازخورد و نظرات مشتریان','پیشنهادات و راهکارهای بهبود','برنامه روز کاری بعد'];
+      return '<div class="rnote-title">'+titles[i]+'</div><div class="rnote-body">'+escHtml(d.notes[k]||'—')+'</div>';
+    }).join('');
+    document.getElementById('drSheet').innerHTML =
+      '<div class="rtitle">گزارش عملکرد روزانه کارشناس فروش تلفنی</div>'+
+      '<div class="rsub">گروه بازرگانی اتحاد</div>'+
+      '<div class="rmeta"><div>نام کارشناس: '+escHtml(d.fullName||'—')+'</div><div>تاریخ گزارش: '+fmtJalaliDate(d.date)+'</div></div>'+
+      '<table><thead><tr><th>شاخص</th><th>واحد</th><th>مقدار</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      notesHtml;
+  }
+
+  /* ------------------ Save / New / Load / Delete ------------------ */
+  function saveDailyReport(){
+    var d = collectDailyForm();
+    if(!d.fullName){ toast('لطفاً نام کارشناس را وارد کنید'); return; }
+    var list = loadAllDaily();
+    var idx = list.findIndex(function(x){ return x.id===d.id; });
+    if(idx>=0) list[idx]=d; else list.push(d);
+    saveAllDaily(list);
+    currentDaily = d;
+    toast('گزارش روزانه با موفقیت ذخیره شد');
+    renderDailyList();
+  }
+  function newDailyReport(){
+    currentDaily = blankDaily();
+    fillDailyForm(currentDaily);
+    toast('فرم جدید آماده است');
+  }
+  window.loadDailyById = function(id){
+    var list = loadAllDaily();
+    var d = list.find(function(x){ return x.id===id; });
+    if(!d) return;
+    fillDailyForm(d);
+    switchTab('daily');
+  };
+  window.deleteDailyById = function(id){
+    if(!confirm('این گزارش روزانه حذف شود؟')) return;
+    saveAllDaily(loadAllDaily().filter(function(x){ return x.id!==id; }));
+    renderDailyList();
+    toast('گزارش روزانه حذف شد');
+  };
+
+  /* ------------------ Print / PDF / Excel (daily) ------------------ */
+  function printDailyReport(){
+    renderDrSheet();
+    document.body.classList.add('printing-report');
+    setTimeout(function(){ window.print(); setTimeout(function(){ document.body.classList.remove('printing-report'); },300); }, 60);
+  }
+  function exportDailyPDF(){
+    renderDrSheet();
+    var sheet = document.getElementById('drSheet');
+    toast('در حال ساخت PDF ...');
+    html2canvas(sheet, {scale:2, backgroundColor:'#ffffff'}).then(function(canvas){
+      var imgData = canvas.toDataURL('image/jpeg', 0.95);
+      var pdf = new window.jspdf.jsPDF({orientation:'portrait', unit:'mm', format:'a4'});
+      var pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight();
+      var margin=8, maxW=pageW-margin*2, maxH=pageH-margin*2;
+      var wMM=(canvas.width/2)*(25.4/96), hMM=(canvas.height/2)*(25.4/96);
+      var fit=Math.min(maxW/wMM, maxH/hMM);
+      var fW=wMM*fit, fH=hMM*fit, x=(pageW-fW)/2, y=(pageH-fH)/2;
+      pdf.addImage(imgData,'JPEG',x,y,fW,fH);
+      var d = currentDaily;
+      pdf.save('Daily-Report-'+fmtJalaliDate(d.date).replace(/\//g,'-')+'.pdf');
+      toast('فایل PDF ساخته شد');
+    }).catch(function(e){ toast('خطا در ساخت PDF'); console.error(e); });
+  }
+  function exportDailyExcel(){
+    var d = collectDailyForm();
+    var rows = [['گزارش عملکرد روزانه کارشناس فروش تلفنی']];
+    rows.push(['نام کارشناس', d.fullName, 'تاریخ گزارش', fmtJalaliDate(d.date)]);
+    rows.push(['شاخص','واحد','مقدار']);
+    DR_METRICS.forEach(function(m){ rows.push([m.label, m.unit, d.metrics[m.key]||0]); });
+    rows.push(['خلاصه عملکرد', d.notes.n1||'']);
+    rows.push(['چالش‌ها', d.notes.n2||'']);
+    rows.push(['بازخورد مشتریان', d.notes.n3||'']);
+    rows.push(['پیشنهادات', d.notes.n4||'']);
+    rows.push(['برنامه فردا', d.notes.n5||'']);
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!views']=[{RTL:true}]; ws['!cols']=[{wch:38},{wch:16},{wch:16},{wch:16}];
+    XLSX.utils.book_append_sheet(wb, ws, 'گزارش روزانه');
+    XLSX.writeFile(wb, 'Daily-Report-'+fmtJalaliDate(d.date).replace(/\//g,'-')+'.xlsx');
+    toast('فایل اکسل ساخته شد');
+  }
+
+  /* ------------------ Daily list (search/manage) ------------------ */
+  function renderDailyList(){
+    var list = loadAllDaily().slice().sort(function(a,b){ return b.updatedAt-a.updatedAt; });
+    var q = toEnglishDigits((document.getElementById('drSearchBox').value||'').trim()).toLowerCase();
+    if(q){
+      list = list.filter(function(d){
+        var hay = toEnglishDigits([d.fullName, fmtJalaliDate(d.date)].join(' ')).toLowerCase();
+        return hay.indexOf(q)>=0;
+      });
+    }
+    var body = document.getElementById('drListBody'); body.innerHTML='';
+    document.getElementById('drEmptyState').classList.toggle('hidden', list.length>0);
+    list.forEach(function(d){
+      var out = parseNum(d.metrics.outCalls), ord = parseNum(d.metrics.orders);
+      var rate = out>0 ? (ord/out*100).toFixed(1) : '0.0';
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="num">'+fmtJalaliDate(d.date)+'</td>'+
+        '<td>'+escHtml(d.fullName||'—')+'</td>'+
+        '<td class="num">'+toPersianDigits(d.metrics.outCalls||0)+'</td>'+
+        '<td class="num">'+toPersianDigits(d.metrics.orders||0)+'</td>'+
+        '<td class="num">'+fmtNum(d.metrics.salesAmount||0)+'</td>'+
+        '<td class="num">'+toPersianDigits(rate)+'٪</td>'+
+        '<td class="list-actions">'+
+          '<button class="btn btn-secondary btn-sm" onclick="loadDailyById(\''+d.id+'\')">ویرایش/مشاهده</button>'+
+          '<button class="btn btn-danger btn-sm" onclick="deleteDailyById(\''+d.id+'\')">حذف</button>'+
+        '</td>';
+      body.appendChild(tr);
+    });
+  }
+
+  /* ------------------ Monthly report ------------------ */
+  function populateMonthYearSelects(){
+    var curY = todayJalali().jy;
+    var ySel = document.getElementById('mr_year'), mSel = document.getElementById('mr_month');
+    ySel.innerHTML=''; mSel.innerHTML='';
+    for(var y=curY-3; y<=curY+1; y++){
+      var o=document.createElement('option'); o.value=y; o.textContent=toPersianDigits(y); if(y===curY) o.selected=true; ySel.appendChild(o);
+    }
+    for(var m=1;m<=12;m++){
+      var o2=document.createElement('option'); o2.value=m; o2.textContent=PERSIAN_MONTHS[m-1];
+      if(m===todayJalali().jm) o2.selected=true;
+      mSel.appendChild(o2);
+    }
+  }
+  function blankMonthlyTotals(){
+    var t = {}; DR_METRICS.forEach(function(m){ if(!m.derived) t[m.key]=0; }); return t;
+  }
+  window.buildMonthlyReport = function(){
+    var jy = +document.getElementById('mr_year').value, jm = +document.getElementById('mr_month').value;
+    var days = loadAllDaily().filter(function(d){ return d.date.jy===jy && d.date.jm===jm; });
+    var totals = blankMonthlyTotals();
+    days.forEach(function(d){
+      DR_METRICS.forEach(function(m){
+        if(!m.derived) totals[m.key] += parseNum(d.metrics[m.key]);
+      });
+    });
+    var avgRate = totals.outCalls>0 ? (totals.orders/totals.outCalls*100) : 0;
+    currentMonthly = { id:(currentMonthly&&currentMonthly.jy===jy&&currentMonthly.jm===jm)?currentMonthly.id:('mr_'+jy+'_'+jm), jy:jy, jm:jm, totals:totals, avgRate:avgRate, daysCount:days.length, createdAt:Date.now() };
+    renderMrSheet();
+    if(days.length===0) toast('هیچ گزارش روزانه‌ای برای این ماه ثبت نشده است');
+  };
+  function renderMrSheet(){
+    if(!currentMonthly){ document.getElementById('mrSheet').innerHTML=''; return; }
+    var c = currentMonthly;
+    var rows = DR_METRICS.filter(function(m){return !m.derived;}).map(function(m){
+      var v = m.key==='salesAmount' ? fmtNum(c.totals[m.key]) : toPersianDigits(c.totals[m.key]);
+      return '<tr><td class="rlabel">'+escHtml(m.label)+'</td><td style="text-align:center;">'+escHtml(m.unit)+'</td><td class="rval">'+v+'</td></tr>';
+    }).join('');
+    rows += '<tr><td class="rlabel">نرخ تبدیل تماس به فروش (میانگین ماهانه)</td><td style="text-align:center;">درصد</td><td class="rval">'+toPersianDigits(c.avgRate.toFixed(1))+'٪</td></tr>';
+    document.getElementById('mrSheet').innerHTML =
+      '<div class="rtitle">گزارش عملکرد ماهانه فروش تلفنی</div>'+
+      '<div class="rsub">گروه بازرگانی اتحاد</div>'+
+      '<div class="rmeta"><div>ماه: '+PERSIAN_MONTHS[c.jm-1]+'</div><div>سال: '+toPersianDigits(c.jy)+'</div><div>تعداد گزارش‌های روزانه ثبت‌شده: '+toPersianDigits(c.daysCount)+'</div></div>'+
+      '<table><thead><tr><th>شاخص</th><th>واحد</th><th>مقدار</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+  window.saveMonthlyReport = function(){
+    if(!currentMonthly){ toast('ابتدا گزارش ماهانه را بسازید'); return; }
+    var list = loadAllMonthly();
+    var idx = list.findIndex(function(x){ return x.jy===currentMonthly.jy && x.jm===currentMonthly.jm; });
+    if(idx>=0) list[idx]=currentMonthly; else list.push(currentMonthly);
+    saveAllMonthly(list);
+    toast('گزارش ماهانه ذخیره شد');
+    renderMonthlyList();
+  };
+  window.printMonthlyReport = function(){
+    if(!currentMonthly){ toast('ابتدا گزارش ماهانه را بسازید'); return; }
+    document.body.classList.add('printing-report');
+    setTimeout(function(){ window.print(); setTimeout(function(){ document.body.classList.remove('printing-report'); },300); }, 60);
+  };
+  window.exportMonthlyPDF = function(){
+    if(!currentMonthly){ toast('ابتدا گزارش ماهانه را بسازید'); return; }
+    var sheet = document.getElementById('mrSheet');
+    toast('در حال ساخت PDF ...');
+    html2canvas(sheet, {scale:2, backgroundColor:'#ffffff'}).then(function(canvas){
+      var imgData = canvas.toDataURL('image/jpeg', 0.95);
+      var pdf = new window.jspdf.jsPDF({orientation:'portrait', unit:'mm', format:'a4'});
+      var pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight();
+      var margin=8, maxW=pageW-margin*2, maxH=pageH-margin*2;
+      var wMM=(canvas.width/2)*(25.4/96), hMM=(canvas.height/2)*(25.4/96);
+      var fit=Math.min(maxW/wMM, maxH/hMM);
+      var fW=wMM*fit, fH=hMM*fit, x=(pageW-fW)/2, y=(pageH-fH)/2;
+      pdf.addImage(imgData,'JPEG',x,y,fW,fH);
+      pdf.save('Monthly-Report-'+currentMonthly.jy+'-'+currentMonthly.jm+'.pdf');
+      toast('فایل PDF ساخته شد');
+    }).catch(function(e){ toast('خطا در ساخت PDF'); console.error(e); });
+  };
+  window.exportMonthlyExcel = function(){
+    if(!currentMonthly){ toast('ابتدا گزارش ماهانه را بسازید'); return; }
+    var c = currentMonthly;
+    var rows = [['گزارش عملکرد ماهانه فروش تلفنی']];
+    rows.push(['ماه', PERSIAN_MONTHS[c.jm-1], 'سال', toPersianDigits(c.jy), 'تعداد گزارش‌های روزانه', c.daysCount]);
+    rows.push(['شاخص','واحد','مقدار']);
+    DR_METRICS.filter(function(m){return !m.derived;}).forEach(function(m){ rows.push([m.label, m.unit, c.totals[m.key]]); });
+    rows.push(['نرخ تبدیل (میانگین)','درصد', c.avgRate.toFixed(1)]);
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!views']=[{RTL:true}]; ws['!cols']=[{wch:38},{wch:16},{wch:16},{wch:16},{wch:20}];
+    XLSX.utils.book_append_sheet(wb, ws, 'گزارش ماهانه');
+    XLSX.writeFile(wb, 'Monthly-Report-'+c.jy+'-'+c.jm+'.xlsx');
+    toast('فایل اکسل ساخته شد');
+  };
+  function renderMonthlyList(){
+    var list = loadAllMonthly().slice().sort(function(a,b){ return (b.jy*100+b.jm)-(a.jy*100+a.jm); });
+    var body = document.getElementById('mrListBody'); body.innerHTML='';
+    document.getElementById('mrEmptyState').classList.toggle('hidden', list.length>0);
+    list.forEach(function(c){
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>'+PERSIAN_MONTHS[c.jm-1]+'</td>'+
+        '<td class="num">'+toPersianDigits(c.jy)+'</td>'+
+        '<td class="num">'+toPersianDigits(c.totals.outCalls||0)+'</td>'+
+        '<td class="num">'+toPersianDigits(c.totals.orders||0)+'</td>'+
+        '<td class="num">'+fmtNum(c.totals.salesAmount||0)+'</td>'+
+        '<td class="num">'+toPersianDigits((c.avgRate||0).toFixed(1))+'٪</td>'+
+        '<td class="list-actions">'+
+          '<button class="btn btn-secondary btn-sm" onclick="loadMonthlyById(\''+c.id+'\')">مشاهده</button>'+
+          '<button class="btn btn-danger btn-sm" onclick="deleteMonthlyById(\''+c.id+'\')">حذف</button>'+
+        '</td>';
+      body.appendChild(tr);
+    });
+  }
+  window.loadMonthlyById = function(id){
+    var c = loadAllMonthly().find(function(x){ return x.id===id; });
+    if(!c) return;
+    currentMonthly = c;
+    document.getElementById('mr_year').value = c.jy;
+    document.getElementById('mr_month').value = c.jm;
+    renderMrSheet();
+    switchTab('reports');
+  };
+  window.deleteMonthlyById = function(id){
+    if(!confirm('این گزارش ماهانه حذف شود؟')) return;
+    saveAllMonthly(loadAllMonthly().filter(function(x){ return x.id!==id; }));
+    renderMonthlyList();
+    toast('گزارش ماهانه حذف شد');
+  };
+
+  /* ------------------ Backup / restore (daily + monthly) ------------------ */
+  window.exportReportsJSON = function(){
+    var data = JSON.stringify({ daily:loadAllDaily(), monthly:loadAllMonthly() }, null, 2);
+    var blob = new Blob([data], {type:'application/json'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'etehad-reports-backup.json';
+    a.click();
+  };
+  window.importReportsJSON = function(evt){
+    var file = evt.target.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      try{
+        var incoming = JSON.parse(reader.result);
+        if(incoming && Array.isArray(incoming.daily)){
+          var exD = loadAllDaily(); var idsD = new Set(exD.map(function(x){return x.id;}));
+          incoming.daily.forEach(function(d){ if(!idsD.has(d.id)) exD.push(d); });
+          saveAllDaily(exD);
+        }
+        if(incoming && Array.isArray(incoming.monthly)){
+          var exM = loadAllMonthly(); var idsM = new Set(exM.map(function(x){return x.id;}));
+          incoming.monthly.forEach(function(m){ if(!idsM.has(m.id)) exM.push(m); });
+          saveAllMonthly(exM);
+        }
+        renderDailyList(); renderMonthlyList();
+        toast('بازیابی گزارش‌ها با موفقیت انجام شد');
+      }catch(e){ toast('فایل نامعتبر است'); }
+    };
+    reader.readAsText(file);
+    evt.target.value='';
+  };
+
+  /* expose functions needed by inline onclick handlers */
+  window.saveDailyReport = saveDailyReport;
+  window.newDailyReport = newDailyReport;
+  window.printDailyReport = printDailyReport;
+  window.exportDailyPDF = exportDailyPDF;
+  window.exportDailyExcel = exportDailyExcel;
+  window.renderDailyList = renderDailyList;
+  window.renderMonthlyList = renderMonthlyList;
+
+  /* ------------------ Init ------------------ */
+  window.addEventListener('DOMContentLoaded', function(){
+    renderDrMetricsBody();
+    populateMonthYearSelects();
+    currentDaily = blankDaily();
+    fillDailyForm(currentDaily);
+    renderDailyList();
+    renderMonthlyList();
+  });
+
+})();
+</script>
+
+<!-- ===================== ماژول ورود فروشنده + همگام‌سازی با سرور (گوگل‌شیت) ===================== -->
+<div id="loginOverlay" style="position:fixed;inset:0;z-index:5000;background:linear-gradient(160deg,#2b2417,#3c3218);display:flex;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fbf8ef;border-radius:16px;padding:30px 28px;max-width:380px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.4);text-align:center;">
+    <div style="font-size:19px;font-weight:900;color:#5f4a12;margin-bottom:4px;">ورود فروشنده</div>
+    <div style="font-size:13px;color:#6b6455;font-weight:700;margin-bottom:18px;">گروه بازرگانی اتحاد</div>
+    <div style="text-align:right;margin-bottom:12px;">
+      <label style="display:block;font-size:14px;font-weight:900;color:#5f4a12;margin-bottom:5px;">شماره تلفن</label>
+      <input id="lg_phone" inputmode="numeric" placeholder="مثال: 0912xxxxxxx" style="width:100%;padding:11px 12px;border-radius:9px;border:1.5px solid #c9a227;font-size:16px;font-weight:800;box-sizing:border-box;">
+    </div>
+    <div style="text-align:right;margin-bottom:16px;">
+      <label style="display:block;font-size:14px;font-weight:900;color:#5f4a12;margin-bottom:5px;">کد ورود اختصاصی</label>
+      <input id="lg_code" inputmode="numeric" placeholder="کد ۴ رقمی که مدیر فروش داده است" style="width:100%;padding:11px 12px;border-radius:9px;border:1.5px solid #c9a227;font-size:16px;font-weight:800;box-sizing:border-box;">
+    </div>
+    <button id="lg_btn" onclick="etehadDoLogin()" style="width:100%;border:none;border-radius:9px;padding:12px;font-size:15px;font-weight:900;background:linear-gradient(135deg,#8a6d1f,#5f4a12);color:#fff;">ورود</button>
+    <div id="lg_msg" style="margin-top:12px;font-size:13px;font-weight:800;color:#7a1f1f;min-height:18px;"></div>
+    <div style="margin-top:14px;font-size:11.5px;color:#a89a76;font-weight:700;">اگر کد ورود ندارید، با مدیر فروش تماس بگیرید.</div>
+  </div>
+</div>
+<button id="logoutBtn" onclick="etehadLogout()" class="no-print" style="display:none;position:fixed;bottom:20px;right:20px;z-index:900;border:none;border-radius:10px;padding:10px 16px;font-weight:900;font-size:13px;background:#7a1f1f;color:#fff;box-shadow:0 6px 16px rgba(0,0,0,.25);">خروج (<span id="logoutName"></span>)</button>
+
+<script>
+(function(){
+  /* ====================================================================
+     تنظیمات اتصال به سرور: آدرس Web App گوگل‌اسکریپت را اینجا جایگذاری کنید
+     (بعد از دیپلوی Code.gs طبق «راهنمای-راه‌اندازی.txt» به دست می‌آید)
+     ==================================================================== */
+  var API_URL = 'local-api';
+
+  var SESSION_KEY = 'etehad_seller_session_v1';
+  var SYNC_MAP = {
+    'etehad_invoices_v1': 'invoices',
+    'etehad_daily_reports_v1': 'daily',
+    'etehad_monthly_reports_v1': 'monthly'
+  };
+
+  function apiConfigured(){ return API_URL && API_URL.indexOf('PUT_YOUR_') !== 0; }
+
+  function getSession(){
+    try{ return JSON.parse(sessionStorage.getItem(SESSION_KEY)); }catch(e){ return null; }
+  }
+  function setSession(s){ sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
+  function clearSession(){ sessionStorage.removeItem(SESSION_KEY); }
+
+  /* --------- override Storage.setItem تا هر ذخیره محلی به سرور هم برود --------- */
+  var _setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function(key, value){
+    _setItem.call(this, key, value);
+    var kind = SYNC_MAP[key];
+    if (kind && apiConfigured()){
+      try{
+        var list = JSON.parse(value);
+        var s = getSession();
+        fetch(API_URL, {
+          method:'POST',
+          headers:{'Content-Type':'text/plain;charset=utf-8'},
+          body: JSON.stringify({action:'upsertMany', payload:{
+            kind: kind, list: list,
+            sellerPhone: s ? s.phone : '',
+            sellerName: s ? s.name : ''
+          }})
+        }).catch(function(){ /* آفلاین بود، بار بعد دوباره تلاش می‌شود چون کل لیست ارسال می‌شود */ });
+      }catch(e){}
+    }
+  };
+
+  /* --------- ورود --------- */
+  window.etehadDoLogin = function(){
+    function en(v){return v.trim().replace(/[۰-۹]/g,function(c){return '۰۱۲۳۴۵۶۷۸۹'.indexOf(c);}).replace(/[٠-٩]/g,function(c){return '٠١٢٣٤٥٦٧٨٩'.indexOf(c);});}
+    var phone = en(document.getElementById('lg_phone').value);
+    var code = en(document.getElementById('lg_code').value);
+    var msg = document.getElementById('lg_msg');
+    if(!phone || !code){ msg.textContent='شماره تلفن و کد را وارد کنید.'; return; }
+    if(!apiConfigured()){
+      msg.textContent='آدرس سرور هنوز تنظیم نشده است (به مدیر فروش اطلاع دهید).';
+      return;
+    }
+    msg.style.color='#5f4a12'; msg.textContent='در حال بررسی...';
+    fetch(API_URL + '?action=login&phone=' + encodeURIComponent(phone) + '&code=' + encodeURIComponent(code))
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        if(res && res.ok){
+          setSession({phone: res.phone, name: res.name});
+          applySession();
+          document.getElementById('loginOverlay').style.display='none';
+        } else {
+          msg.style.color='#7a1f1f';
+          msg.textContent = (res && res.error) ? res.error : 'ورود ناموفق بود.';
+        }
+      })
+      .catch(function(){ msg.style.color='#7a1f1f'; msg.textContent='خطا در اتصال به سرور. اینترنت را بررسی کنید.'; });
+  };
+
+  window.etehadLogout = function(){
+    if(!confirm('از حساب کاربری خارج شوید؟')) return;
+    clearSession();
+    location.reload();
+  };
+
+  function applySession(){
+    var s = getSession();
+    if(!s) return;
+    document.getElementById('logoutBtn').style.display='inline-flex';
+    document.getElementById('logoutName').textContent = s.name || s.phone;
+    /* پرکردن خودکار و قفل نام صادرکننده فاکتور و نام کارشناس گزارش روزانه */
+    var issuer = document.getElementById('in_issuer');
+    if(issuer){ issuer.value = s.name || ''; issuer.setAttribute('readonly','readonly'); issuer.style.background='#f1e8c6'; }
+    var drName = document.getElementById('dr_fullName');
+    if(drName){ drName.value = s.name || ''; drName.setAttribute('readonly','readonly'); drName.style.background='#f1e8c6'; }
+  }
+
+  window.addEventListener('DOMContentLoaded', function(){
+    var s = getSession();
+    if(s){
+      document.getElementById('loginOverlay').style.display='none';
+      applySession();
+    }
+    if(!apiConfigured()){
+      var warn = document.createElement('div');
+      warn.className='no-print';
+      warn.style.cssText='position:fixed;top:0;right:0;left:0;z-index:4000;background:#7a1f1f;color:#fff;text-align:center;padding:6px;font-size:12px;font-weight:800;';
+      warn.textContent='⚠️ آدرس سرور گوگل‌شیت هنوز در این فایل تنظیم نشده — داده‌ها فقط به‌صورت محلی ذخیره می‌شوند و برای مدیر فروش ارسال نمی‌شوند.';
+      document.body.appendChild(warn);
+    }
+    /* اگر پس از پرشدن فرم توسط سیستم، مقدار نام صادرکننده خالی شد دوباره پر شود */
+    setInterval(function(){
+      var s2 = getSession();
+      if(s2){
+        var issuer = document.getElementById('in_issuer');
+        if(issuer && !issuer.value) issuer.value = s2.name || '';
+        var drName = document.getElementById('dr_fullName');
+        if(drName && !drName.value) drName.value = s2.name || '';
+      }
+    }, 1500);
+  });
+})();
+</script>
+
+<!-- ===================== جابجایی بین فیلدها با Enter و Tab ===================== -->
+<script>
+(function(){
+  function isVisible(el){
+    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  }
+  /* محدوده فعال: اگر صفحه ورود باز است فقط آن، وگرنه تب فعلی */
+  function activeScope(){
+    var ov = document.getElementById('loginOverlay');
+    if(ov && ov.style.display !== 'none' && isVisible(ov)) return ov;
+    var ids = ['tabNew','tabManage','tabDaily','tabReports'];
+    for(var i=0;i<ids.length;i++){
+      var t = document.getElementById(ids[i]);
+      if(t && !t.classList.contains('hidden')) return t;
+    }
+    return document.body;
+  }
+  function fields(scope){
+    var all = scope.querySelectorAll('input, select, textarea');
+    var out = [];
+    for(var i=0;i<all.length;i++){
+      var el = all[i];
+      if(el.disabled || el.readOnly || el.type==='hidden' || el.type==='file' || el.type==='button') continue;
+      if(!isVisible(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  function focusField(el){
+    el.focus();
+    if(el.select && el.tagName==='INPUT' && el.type!=='number'){ try{ el.select(); }catch(e){} }
+  }
+
+  document.addEventListener('keydown', function(e){
+    var key = e.key;
+    if(key!=='Enter' && key!=='Tab') return;
+    var el = e.target;
+    if(!el || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return;
+    if(el.type==='file') return;
+    if(e.ctrlKey || e.altKey || e.metaKey) return;
+
+    var scope = activeScope();
+    var list = fields(scope);
+    var idx = list.indexOf(el);
+    if(idx < 0) return;
+
+    var back = (key==='Tab' && e.shiftKey) || (key==='Enter' && e.shiftKey);
+
+    /* Enter داخل توضیحات (textarea) = خط جدید؛ با Ctrl+Enter یا Tab می‌توان رفت */
+    if(key==='Enter' && el.tagName==='TEXTAREA') return;
+
+    /* آخرین فیلد صفحه ورود: Enter یعنی ورود */
+    if(key==='Enter' && scope.id==='loginOverlay' && idx===list.length-1 && !back){
+      e.preventDefault();
+      if(window.etehadDoLogin) window.etehadDoLogin();
+      return;
+    }
+
+    /* آخرین فیلد آخرین ردیف اقلام: Enter یک ردیف جدید اضافه می‌کند */
+    if(key==='Enter' && !back && el.closest && el.closest('#itemsEditorBody') && el.getAttribute('data-f')==='tax'){
+      var rows = document.querySelectorAll('#itemsEditorBody tr');
+      if(el.closest('tr')===rows[rows.length-1] && typeof addItemRow==='function'){
+        e.preventDefault();
+        addItemRow();
+        var nr = document.querySelectorAll('#itemsEditorBody tr');
+        var first = nr[nr.length-1].querySelector('input');
+        if(first) focusField(first);
+        return;
+      }
+    }
+
+    var next = list[idx + (back?-1:1)];
+    if(!next){
+      /* Tab در ابتدا/انتهای محدوده: رفتار معمول مرورگر؛ Enter: بدون اقدام */
+      if(key==='Enter') e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    focusField(next);
+  }, true);
+})();
+</script>
+
+</body>
+</html>
